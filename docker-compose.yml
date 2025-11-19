@@ -1,0 +1,50 @@
+version: "3.9"
+
+services:
+  db:
+    image: mysql:8.0
+    container_name: photory-db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpass}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-photomanager}
+      MYSQL_USER: ${MYSQL_USER:-photouser}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-photopass}
+    ports:
+      - "3307:3306"
+    command: >
+      --default-authentication-plugin=mysql_native_password
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - db_data:/var/lib/mysql
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+
+  backend:
+    build: ./server
+    container_name: photory-backend
+    restart: unless-stopped
+    depends_on:
+      - db
+    environment:
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-change-me}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev-jwt-secret-change-me}
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER:-photouser}:${MYSQL_PASSWORD:-photopass}@db:3306/${MYSQL_DATABASE:-photomanager}
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./server:/app
+
+  frontend:
+    build: ./browser
+    container_name: photory-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./browser:/app
+
+volumes:
+  db_data:

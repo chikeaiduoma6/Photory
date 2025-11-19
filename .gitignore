@@ -1,0 +1,26 @@
+# Node / front-end
+node_modules/
+browser/node_modules/
+browser/dist/
+browser/.vite/
+
+# Python / back-end
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+server/.venv/
+server/venv/
+
+# Env files
+.env
+server/.env
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Docker volume
+db_data/

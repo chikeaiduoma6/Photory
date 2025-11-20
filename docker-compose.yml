@@ -43,8 +43,10 @@ services:
       - backend
     ports:
       - "5173:5173"
-    # volumes:
-      # - ./browser:/app
+    volumes:
+       - ./browser:/app
+       - /app/node_modules
+    command: ["npm","run","dev","--","--host"]
 
-volumes:
+volumes: 
   db_data:

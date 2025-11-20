@@ -1,17 +1,34 @@
+// src/router/index.ts
 import { createRouter, createWebHistory } from 'vue-router'
-import Login from '../views/Login.vue'
 import Dashboard from '../views/Dashboard.vue'
+import Login from '../views/auth/Login.vue'
+import Register from '../views/auth/Register.vue'
+import ForgotPassword from '../views/auth/ForgotPassword.vue'
 
 const routes = [
-  {
-    path: '/login',
-    name: 'Login',
-    component: Login,
-  },
   {
     path: '/',
     name: 'Dashboard',
     component: Dashboard,
+  },
+  {
+    path: '/auth/login',
+    name: 'AuthLogin',
+    component: Login,
+  },
+  {
+    path: '/login', 
+    redirect: '/auth/login',
+  },
+  {
+    path: '/auth/register',
+    name: 'AuthRegister',
+    component: Register,
+  },
+  {
+    path: '/auth/forgot-password',
+    name: 'AuthForgotPassword',
+    component: ForgotPassword,
   },
 ]
 

@@ -105,7 +105,7 @@ function logout() {
 
 // 上传按钮
 function upload() {
-  ElMessage.info('')
+  router.push('/upload')
 }
 </script>
 

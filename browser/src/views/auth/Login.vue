@@ -4,55 +4,26 @@
     <template #subtitle>登录您的 Photory 账户</template>
 
     <template #body>
-      <el-form
-        :model="form"
-        :rules="rules"
-        ref="formRef"
-        label-position="top"
-        @submit.prevent="onSubmit"
-      >
+      <el-form :model="form" :rules="rules" ref="formRef" label-position="top" @submit.prevent="onSubmit">
         <el-form-item label="邮箱地址" prop="email">
-          <el-input
-            v-model="form.email"
-            placeholder="请输入邮箱"
-            size="large"
-            clearable
-          >
-            <template #prefix>
-              <el-icon><Message /></el-icon>
-            </template>
+          <el-input v-model="form.email" placeholder="请输入邮箱" size="large" clearable>
+            <template #prefix><el-icon><Message /></el-icon></template>
           </el-input>
         </el-form-item>
 
         <el-form-item label="密码" prop="password">
-          <el-input
-            v-model="form.password"
-            type="password"
-            show-password
-            placeholder="请输入密码"
-            size="large"
-          >
-            <template #prefix>
-              <el-icon><Lock /></el-icon>
-            </template>
+          <el-input v-model="form.password" type="password" show-password placeholder="请输入密码" size="large">
+            <template #prefix><el-icon><Lock /></el-icon></template>
           </el-input>
         </el-form-item>
 
         <div class="row-between">
           <el-checkbox v-model="form.rememberMe">记住我</el-checkbox>
-          <router-link to="/auth/forgot-password" class="small-link">
-            忘记密码？
-          </router-link>
+          <router-link to="/auth/forgot-password" class="small-link">忘记密码？</router-link>
         </div>
 
         <el-form-item style="margin-top: 16px">
-          <el-button
-            type="primary"
-            size="large"
-            class="submit-btn"
-            :loading="submitting"
-            @click="onSubmit"
-          >
+          <el-button type="primary" size="large" class="submit-btn" :loading="submitting" @click="onSubmit">
             登录
           </el-button>
         </el-form-item>
@@ -73,15 +44,12 @@ import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { Message, Lock } from '@element-plus/icons-vue'
 import AuthShell from '@/components/auth/AuthShell.vue'
 import axios from 'axios'
+import { useAuthStore } from '@/stores/auth'
 
 const router = useRouter()
+const authStore = useAuthStore()
 
-const form = reactive({
-  email: '',
-  password: '',
-  rememberMe: false,
-})
-
+const form = reactive({ email: '', password: '', rememberMe: false })
 const formRef = ref<FormInstance>()
 const submitting = ref(false)
 
@@ -103,12 +71,11 @@ const onSubmit = () => {
         email: form.email,
         password: form.password,
       })
-      
-      console.log('login result:', res.data)
-      ElMessage.success('登录成功～')
-      router.push('/') 
-    } catch {
-      ElMessage.error('登录失败')
+      authStore.setAuth(res.data.access_token, res.data.user)
+      ElMessage.success('登录成功！')
+      router.push('/')
+    } catch (err: any) {
+      ElMessage.error(err?.response?.data?.message || '登录失败')
     } finally {
       submitting.value = false
     }
@@ -117,39 +84,10 @@ const onSubmit = () => {
 </script>
 
 <style scoped>
-.row-between {
-  margin-top: 4px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.submit-btn {
-  width: 100%;
-  border-radius: 999px;
-  font-size: 15px;
-  font-weight: 600;
-  background: linear-gradient(90deg, #ff7fb0, #ff8ec2);
-  border: none;
-}
-
-.link {
-  color: #ff699d;
-  text-decoration: none;
-  font-weight: 500;
-}
-
-.link:hover {
-  text-decoration: underline;
-}
-
-.small-link {
-  font-size: 13px;
-  color: #ff699d;
-  text-decoration: none;
-}
-
-.small-link:hover {
-  text-decoration: underline;
-}
+.row-between { margin-top: 4px; display: flex; justify-content: space-between; align-items: center; }
+.submit-btn { width: 100%; border-radius: 999px; font-size: 15px; font-weight: 600; background: linear-gradient(90deg, #ff7fb0, #ff8ec2); border: none; }
+.link { color: #ff699d; text-decoration: none; font-weight: 500; }
+.link:hover { text-decoration: underline; }
+.small-link { font-size: 13px; color: #ff699d; text-decoration: none; }
+.small-link:hover { text-decoration: underline; }
 </style>

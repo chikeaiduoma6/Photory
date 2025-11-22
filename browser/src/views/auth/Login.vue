@@ -42,8 +42,8 @@ import { reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { Message, Lock } from '@element-plus/icons-vue'
-import AuthShell from '@/components/auth/AuthShell.vue'
 import axios from 'axios'
+import AuthShell from '@/components/auth/AuthShell.vue'
 import { useAuthStore } from '@/stores/auth'
 
 const router = useRouter()
@@ -72,7 +72,7 @@ const onSubmit = () => {
         password: form.password,
       })
       authStore.setAuth(res.data.access_token, res.data.user)
-      ElMessage.success('登录成功！')
+      ElMessage.success('登录成功')
       router.push('/')
     } catch (err: any) {
       ElMessage.error(err?.response?.data?.message || '登录失败')

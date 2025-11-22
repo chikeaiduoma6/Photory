@@ -55,5 +55,6 @@ def login():
     if not user or not user.check_password(password):
         return jsonify({"message": "邮箱或密码错误"}), 401
 
-    token = create_access_token(identity=user.id, additional_claims={"username": user.username})
+    # PyJWT 2.8+ 要求 sub/identity 为字符串
+    token = create_access_token(identity=str(user.id), additional_claims={"username": user.username})
     return jsonify({"access_token": token, "user": user.to_dict()})

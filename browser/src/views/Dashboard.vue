@@ -1,8 +1,17 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
+import axios from 'axios'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
+
+interface GalleryImage {
+  id: number
+  displayName: string
+  created_at?: string
+  thumbUrl: string
+  fullUrl: string
+}
 
 const router = useRouter()
 const authStore = useAuthStore()
@@ -14,39 +23,53 @@ const currentPage = ref(1)
 const pageSize = ref(12)
 const isBatchMode = ref(false)
 const selectedIds = ref<number[]>([])
+const images = ref<GalleryImage[]>([])
+const total = ref(0)
+const loading = ref(false)
 
-const allImages = ref([
-  { id: 1, title: '樱花', date: '2025-11-05', url: '/demo/sakura.jpg' },
-  { id: 2, title: '海浪', date: '2025-11-08', url: '/demo/sea.jpg' },
-  { id: 3, title: '小猫', date: '2025-11-06', url: '/demo/kitty.jpg' },
-  { id: 4, title: '日落', date: '2025-11-07', url: '/demo/sunset.jpg' },
-  { id: 5, title: '雪山', date: '2025-11-03', url: '/demo/mountain.jpg' },
-  { id: 6, title: '街角', date: '2025-11-01', url: '/demo/street.jpg' },
-  { id: 7, title: '森林', date: '2025-10-31', url: '/demo/forest.jpg' },
-  { id: 8, title: '咖啡', date: '2025-11-02', url: '/demo/coffee.jpg' },
-  { id: 9, title: '建筑', date: '2025-10-30', url: '/demo/building.jpg' },
-  { id: 10, title: '笑脸', date: '2025-10-29', url: '/demo/portrait.jpg' },
-  { id: 11, title: '灯光', date: '2025-10-28', url: '/demo/light.jpg' },
-  { id: 12, title: '山丘', date: '2025-10-27', url: '/demo/hill.jpg' },
-  { id: 13, title: '月亮', date: '2025-10-26', url: '/demo/moon.jpg' },
-])
+const tasksCount = computed(() => 0)
 
-const sortedImages = computed(() => {
-  const arr = [...allImages.value]
-  arr.sort((a, b) => (sortOrder.value === 'newest' ? b.date.localeCompare(a.date) : a.date.localeCompare(b.date)))
-  return arr
+async function fetchImages() {
+  loading.value = true
+  try {
+    const res = await axios.get('/api/v1/images', {
+      params: { page: currentPage.value, page_size: pageSize.value, sort: sortOrder.value },
+    })
+        const tokenParam = authStore.token ? `?jwt=${authStore.token}` : ''
+    images.value = (res.data.items || []).map((item: any) => ({
+      ...item,
+      thumbUrl: (item.thumb_url || `/api/v1/images/${item.id}/thumb`) + tokenParam,
+      fullUrl: (item.raw_url || `/api/v1/images/${item.id}/raw`) + tokenParam,
+      displayName: item.name || item.original_name,
+    }))
+
+    total.value = res.data.total || 0
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.message || '获取图片失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(() => {
+  if (authStore.token) fetchImages()
 })
-const total = computed(() => sortedImages.value.length)
-const pagedImages = computed(() => {
-  const start = (currentPage.value - 1) * pageSize.value
-  return sortedImages.value.slice(start, start + pageSize.value)
-})
+watch(
+  () => authStore.token,
+  token => {
+    currentPage.value = 1
+    if (token) fetchImages()
+    else images.value = []
+  }
+)
 
-function handlePageChange(p: number) { currentPage.value = p }
-watch(sortOrder, () => { currentPage.value = 1 })
-
-function changeView(mode: 'grid' | 'masonry' | 'large') { viewMode.value = mode }
-
+function handlePageChange(p: number) {
+  currentPage.value = p
+  fetchImages()
+}
+function changeView(mode: 'grid' | 'masonry' | 'large') {
+  viewMode.value = mode
+}
 function toggleBatchMode() {
   isBatchMode.value = !isBatchMode.value
   if (!isBatchMode.value) selectedIds.value = []
@@ -57,14 +80,17 @@ function toggleSelect(id: number) {
   if (i >= 0) selectedIds.value.splice(i, 1)
   else selectedIds.value.push(id)
 }
-function isSelected(id: number) { return selectedIds.value.includes(id) }
-
+function isSelected(id: number) {
+  return selectedIds.value.includes(id)
+}
 function logout() {
   authStore.logout()
-  ElMessage.success('已退出登录，期待再次相遇～')
+  ElMessage.success('已退出登录')
   router.push('/auth/login')
 }
-function upload() { router.push('/upload') }
+function upload() {
+  router.push('/upload')
+}
 </script>
 
 <template>
@@ -77,13 +103,14 @@ function upload() { router.push('/upload') }
           <p>记录世间每一份美好，让瞬间变成永恒～</p>
         </div>
       </div>
+
       <nav>
         <a class="active">🏠 首页</a>
         <a>📚 相册</a>
         <a>📁 文件夹</a>
         <a>🏷️ 标签</a>
-        <a>✨ 智能分类</a>
-        <a>🤖 AI 工作室</a>
+        <a>🧠 智能分类</a>
+        <a>🤖 AI 工作流</a>
         <a>🧾 任务</a>
         <a>🗑️ 回收站</a>
         <a>⚙️ 设置</a>
@@ -93,11 +120,12 @@ function upload() { router.push('/upload') }
     <main>
       <header class="topbar">
         <div class="left">
-          <div class="title">今天也要好好记录生活 ✨</div>
-          <div class="subtitle">Photory 记录你的每一张 Photo 下的温柔 story～</div>
+          <div class="title">今天也要好好记录生活吧</div>
+          <div class="subtitle">Photory 记录你的每一张 photo 下的温柔 story</div>
         </div>
+
         <div class="right">
-          <span class="welcome">欢迎你，亲爱的Photory用户{{ username }}！</span>
+          <span class="welcome">欢迎你，亲爱的 Photory 用户 {{ username }}</span>
           <el-badge is-dot class="bell"><button class="icon-btn">🔔</button></el-badge>
           <button class="icon-btn" @click="logout">🚪</button>
         </div>
@@ -106,16 +134,19 @@ function upload() { router.push('/upload') }
       <section class="hero">
         <div class="hero-left">
           <div class="badge">今日心情 · 小小记录</div>
-          <h2>让美好永远留在心间 🌸</h2>
-          <p>这里是你的专属回忆小宇宙，生活里的每一朵花、每一片天空、每一场落日，都值得被认真记录。</p>
+          <h2>让美好永远留在心底 🌸</h2>
+          <p>
+            这里是你的专属回忆小宇宙，生活里的每一朵花、每一片天空、每一场落日，都值得被认真记录。
+          </p>
           <div class="stats">
             <div><b>{{ total }}</b><span>图片总数</span></div>
             <div><b>1</b><span>今日上传</span></div>
-            <div><b>3</b><span>进行中的任务</span></div>
+            <div><b>{{ tasksCount }}</b><span>进行中的任务</span></div>
           </div>
         </div>
+
         <div class="hero-right">
-          <div class="hero-img"><span>🌷 Photory 等你来探索哦～</span></div>
+          <div class="hero-img"><span>🌷 Photory 等你来探索哦！</span></div>
         </div>
       </section>
 
@@ -125,7 +156,7 @@ function upload() { router.push('/upload') }
           <button class="manage-btn" :class="{ active: isBatchMode }" @click="toggleBatchMode">
             🧺 {{ isBatchMode ? '退出批量管理' : '批量管理' }}
           </button>
-          <span v-if="isBatchMode" class="selected-tip">已选中 {{ selectedIds.length }} 张图片</span>
+          <span v-if="isBatchMode" class="selected-tip">已选中 {{ selectedIds.length }} 张图</span>
         </div>
 
         <div class="right">
@@ -134,27 +165,32 @@ function upload() { router.push('/upload') }
             <button class="view-pill" :class="{ active: viewMode === 'masonry' }" @click="changeView('masonry')">🧱 瀑布流</button>
             <button class="view-pill" :class="{ active: viewMode === 'large' }" @click="changeView('large')">🃏 大卡片</button>
           </div>
+
           <div class="sort">
             <span>排序：</span>
-            <button class="sort-pill" :class="{ active: sortOrder === 'newest' }" @click="sortOrder = 'newest'">最新上传</button>
-            <button class="sort-pill" :class="{ active: sortOrder === 'oldest' }" @click="sortOrder = 'oldest'">最早记录</button>
+            <button class="sort-pill" :class="{ active: sortOrder === 'newest' }" @click="sortOrder = 'newest'; fetchImages()">最新上传</button>
+            <button class="sort-pill" :class="{ active: sortOrder === 'oldest' }" @click="sortOrder = 'oldest'; fetchImages()">最早记载</button>
           </div>
         </div>
       </section>
 
       <section class="gallery" :class="viewMode">
+        <div v-if="!loading && images.length === 0" class="empty-tip">
+          你的图库还是空空如也哦，快来上传第一张图片吧～
+        </div>
         <div
-          v-for="img in pagedImages"
+          v-for="img in images"
+          v-else
           :key="img.id"
           class="photo"
           :class="{ selected: isSelected(img.id), 'batch-mode': isBatchMode }"
           @click="toggleSelect(img.id)"
         >
-          <div class="select-badge" v-if="isBatchMode"><span v-if="isSelected(img.id)">✔</span></div>
-          <img :src="img.url" :alt="img.title" loading="lazy" />
+          <div class="select-badge" v-if="isBatchMode"><span v-if="isSelected(img.id)">✓</span></div>
+          <img :src="img.thumbUrl" :alt="img.displayName" loading="lazy" />
           <div class="caption">
-            <div class="title">{{ img.title }}</div>
-            <div class="date">{{ img.date }}</div>
+            <div class="title">{{ img.displayName }}</div>
+            <div class="date">{{ img.created_at?.slice(0, 10) }}</div>
           </div>
         </div>
       </section>
@@ -242,4 +278,5 @@ main { flex: 1; display: flex; flex-direction: column; }
 footer { text-align: center; font-size: 12px; color: #b57a90; padding-bottom: 16px; }
 @media (max-width: 1200px) { .gallery.grid { grid-template-columns: repeat(3, 1fr); } .gallery.masonry { column-count: 3; } }
 @media (max-width: 900px) { .sidebar { display: none; } .hero { grid-template-columns: 1fr; } .gallery.grid { grid-template-columns: repeat(2, 1fr); } .gallery.masonry { column-count: 2; } }
+.empty-tip { padding: 40px; text-align: center; color: #a35d76; }
 </style>

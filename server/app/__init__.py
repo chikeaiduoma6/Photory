@@ -7,6 +7,13 @@ from .auth_routes import auth_bp
 from .images_routes import images_bp
 from .models import User
 
+# 允许 PIL 读取 HEIC/HEIF
+try:
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+except Exception:
+    pass
+
 def create_app(config_class: type[Config] = Config) -> Flask:
     app = Flask(__name__)
     app.config.from_object(config_class)

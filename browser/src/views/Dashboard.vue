@@ -35,14 +35,13 @@ async function fetchImages() {
     const res = await axios.get('/api/v1/images', {
       params: { page: currentPage.value, page_size: pageSize.value, sort: sortOrder.value },
     })
-        const tokenParam = authStore.token ? `?jwt=${authStore.token}` : ''
+    const tokenParam = authStore.token ? `?jwt=${authStore.token}` : ''
     images.value = (res.data.items || []).map((item: any) => ({
       ...item,
       thumbUrl: (item.thumb_url || `/api/v1/images/${item.id}/thumb`) + tokenParam,
       fullUrl: (item.raw_url || `/api/v1/images/${item.id}/raw`) + tokenParam,
       displayName: item.name || item.original_name,
     }))
-
     total.value = res.data.total || 0
   } catch (error: any) {
     ElMessage.error(error?.response?.data?.message || '获取图片失败')
@@ -75,7 +74,10 @@ function toggleBatchMode() {
   if (!isBatchMode.value) selectedIds.value = []
 }
 function toggleSelect(id: number) {
-  if (!isBatchMode.value) return
+  if (!isBatchMode.value) {
+    router.push(`/images/${id}`)
+    return
+  }
   const i = selectedIds.value.indexOf(id)
   if (i >= 0) selectedIds.value.splice(i, 1)
   else selectedIds.value.push(id)
@@ -92,6 +94,7 @@ function upload() {
   router.push('/upload')
 }
 </script>
+
 
 <template>
   <div class="dashboard">

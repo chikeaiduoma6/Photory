@@ -107,11 +107,10 @@ async function uploadOne(item: UploadItem) {
     item.status = 'success'
     item.imageId = uploaded?.id
     if (openDetailAfter.value && item.imageId) {
-      const tokenParam = authStore.token ? `?jwt=${authStore.token}` : ''
-      window.open(`/api/v1/images/${item.imageId}/raw${tokenParam}`, '_blank')
+      router.push(`/images/${item.imageId}`)
     }
-
     ElMessage.success('上传成功')
+
   } catch (err: any) {
     if (controller.signal.aborted && (item.status === 'paused' || item.status === 'stopped')) return
     item.status = 'error'

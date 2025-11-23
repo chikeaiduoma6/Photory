@@ -1,6 +1,7 @@
 import re
 from flask import Blueprint, jsonify, request
 from flask_jwt_extended import create_access_token
+from sqlalchemy import or_
 from .extensions import db
 from .models import User
 
@@ -48,13 +49,18 @@ def register():
 @auth_bp.post("/login")
 def login():
     data = request.get_json() or {}
-    email = (data.get("email") or "").strip().lower()
+    identifier = (data.get("identifier") or data.get("email") or "").strip()
     password = data.get("password") or ""
 
-    user = User.query.filter_by(email=email).first()
-    if not user or not user.check_password(password):
-        return jsonify({"message": "邮箱或密码错误"}), 401
+    if not identifier:
+        return jsonify({"message": "请输入邮箱或用户名"}), 400
 
-    # PyJWT 2.8+ 要求 sub/identity 为字符串
+    user = User.query.filter(
+        or_(User.email == identifier.lower(), User.username == identifier)
+    ).first()
+
+    if not user or not user.check_password(password):
+        return jsonify({"message": "账号或密码错误"}), 401
+
     token = create_access_token(identity=str(user.id), additional_claims={"username": user.username})
     return jsonify({"access_token": token, "user": user.to_dict()})

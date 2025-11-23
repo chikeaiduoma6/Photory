@@ -5,10 +5,6 @@ import axios from 'axios'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
 
-const router = useRouter()
-const authStore = useAuthStore()
-const username = computed(() => authStore.user?.username || '未登录')
-
 type UploadStatus = 'waiting' | 'uploading' | 'paused' | 'stopped' | 'success' | 'error'
 interface UploadItem {
   id: number
@@ -22,12 +18,34 @@ interface UploadItem {
   addedAt: number
   imageId?: number
 }
+interface TagItem { name: string; color: string }
+
+const router = useRouter()
+const authStore = useAuthStore()
+const username = computed(() => authStore.user?.username || '未登录')
+
+const links = [
+  { label: '首页', icon: '🏠', path: '/' },
+  { label: '上传中心', icon: '☁️', path: '/upload' },
+  { label: '标签', icon: '🏷️', path: '/tags' },
+  { label: '文件夹', icon: '📁', path: '/folders' },
+  { label: '相册', icon: '📚', path: '/albums' },
+  { label: '智能分类', icon: '🧠', path: '/smart' },
+  { label: 'AI工作台', icon: '🤖', path: '/ai' },
+  { label: '任务中心', icon: '🧾', path: '/tasks' },
+  { label: '回收站', icon: '🗑️', path: '/recycle' },
+  { label: '设置', icon: '⚙️', path: '/settings' },
+]
+const currentPath = computed(() => router.currentRoute.value.path)
+function go(path: string) { router.push(path) }
+function isActive(path: string) { return currentPath.value === path || currentPath.value.startsWith(path + '/') }
 
 const selectedFiles = ref<File[]>([])
 const targetFolder = ref('我的图库')
 const visibility = ref<'public' | 'private'>('private')
-const tagInput = ref('')
-const tagList = ref<string[]>([])
+const tagList = ref<TagItem[]>([])
+const newTagName = ref('')
+const newTagColor = ref('#ff8bb3')
 const customName = ref('')
 const openDetailAfter = ref(false)
 
@@ -42,7 +60,6 @@ function onSelectFiles(event: Event) {
   selectedFiles.value = [...selectedFiles.value, ...Array.from(files)]
   input.value = ''
 }
-
 function onDrop(event: DragEvent) {
   event.preventDefault()
   const files = event.dataTransfer?.files
@@ -50,7 +67,6 @@ function onDrop(event: DragEvent) {
   selectedFiles.value = [...selectedFiles.value, ...Array.from(files)]
 }
 function onDragOver(event: DragEvent) { event.preventDefault() }
-
 function triggerSelectFiles() { fileInputRef.value?.click() }
 
 function formatSize(size: number) {
@@ -60,18 +76,22 @@ function formatSize(size: number) {
   return `${mb.toFixed(2)} MB`
 }
 
-function syncTags() {
-  tagList.value = Array.from(
-    new Set(
-      tagInput.value
-        .split(',')
-        .map(v => v.trim())
-        .filter(Boolean)
-    )
-  )
+function addTagChip() {
+  const name = newTagName.value.trim()
+  if (!name) {
+    ElMessage.warning('请输入标签名称')
+    return
+  }
+  if (tagList.value.some(t => t.name === name)) {
+    ElMessage.warning('标签已存在')
+    return
+  }
+  tagList.value.push({ name, color: newTagColor.value || '#ff8bb3' })
+  newTagName.value = ''
+  newTagColor.value = '#ff8bb3'
 }
-function removeTag(tag: string) {
-  tagList.value = tagList.value.filter(t => t !== tag)
+function removeTag(name: string) {
+  tagList.value = tagList.value.filter(t => t.name !== name)
 }
 
 async function uploadOne(item: UploadItem) {
@@ -84,7 +104,7 @@ async function uploadOne(item: UploadItem) {
   form.append('file', item.raw)
   form.append('folder', targetFolder.value || '默认图库')
   form.append('visibility', visibility.value)
-  form.append('tags', tagList.value.join(','))
+  form.append('tags', tagList.value.map(t => t.name).join(','))
   form.append('name', customName.value || item.name.split('.').slice(0, -1).join('.') || item.name)
 
   const controller = new AbortController()
@@ -110,7 +130,6 @@ async function uploadOne(item: UploadItem) {
       router.push(`/images/${item.imageId}`)
     }
     ElMessage.success('上传成功')
-
   } catch (err: any) {
     if (controller.signal.aborted && (item.status === 'paused' || item.status === 'stopped')) return
     item.status = 'error'
@@ -147,18 +166,15 @@ function pauseItem(item: UploadItem) {
   item.controller.abort()
   item.status = 'paused'
 }
-
 function resumeItem(item: UploadItem) {
   if (item.status !== 'paused') return
   uploadOne(item)
 }
-
 function stopItem(item: UploadItem) {
   if (item.controller) item.controller.abort()
   item.status = 'stopped'
   item.progress = 0
 }
-
 function removeItem(id: number) {
   uploadItems.value = uploadItems.value.filter(i => i.id !== id)
 }
@@ -167,7 +183,6 @@ function logout() {
   authStore.logout()
   router.push('/auth/login')
 }
-function goBackHome() { router.push('/') }
 </script>
 
 <template>
@@ -177,20 +192,19 @@ function goBackHome() { router.push('/') }
         <div class="icon">📸</div>
         <div class="text">
           <h1>Photory</h1>
-          <p>记录世间每一份美好，让瞬间永恒～</p>
+          <p>记录世间每一份美好，让瞬间变成永恒～</p>
         </div>
       </div>
 
       <nav>
-        <a @click="goBackHome">🏠 首页</a>
-        <a>📚 相册</a>
-        <a>📁 文件夹</a>
-        <a>🏷️ 标签</a>
-        <a>🧠 智能文件夹</a>
-        <a>🤖 AI 工作流</a>
-        <a>🧾 任务</a>
-        <a>🗑️ 回收站</a>
-        <a>⚙️ 设置</a>
+        <a
+          v-for="item in links"
+          :key="item.path"
+          :class="{ active: isActive(item.path) }"
+          @click="go(item.path)"
+        >
+          {{ item.icon }} {{ item.label }}
+        </a>
       </nav>
     </aside>
 
@@ -198,11 +212,11 @@ function goBackHome() { router.push('/') }
       <header class="topbar">
         <div class="left">
           <div class="title">上传中心 · 快来丰富你的专属图库吧！</div>
-          <div class="subtitle">支持拖拽上传、多张图片批量导入，上传后可以愉快浏览～</div>
+          <div class="subtitle">支持多种类型图片导入和EXIF信息解析，上传后可以愉快浏览～</div>
         </div>
         <div class="right">
           <span class="welcome">欢迎你，亲爱的 Photory 用户 {{ username }}</span>
-          <button class="icon-btn" title="返回首页" @click="goBackHome">🏡</button>
+          <button class="icon-btn" title="返回首页" @click="go('/')">🏡</button>
           <button class="icon-btn" title="退出登录" @click="logout">🚪</button>
         </div>
       </header>
@@ -212,7 +226,7 @@ function goBackHome() { router.push('/') }
           <div class="drop-inner">
             <div class="upload-icon">⬆️</div>
             <h2>拖拽文件到这里</h2>
-            <p>支持 JPG、PNG 等格式～</p>
+            <p>支持 JPG、PNG、GIF、WebP、BMP、HEIC/HEIF 等格式～</p>
             <button class="select-btn" @click="triggerSelectFiles">点击选择文件</button>
             <input ref="fileInputRef" type="file" multiple class="file-input" @change="onSelectFiles" />
             <div v-if="selectedFiles.length" class="selected-tip">
@@ -247,11 +261,24 @@ function goBackHome() { router.push('/') }
           </div>
 
           <div class="setting-item">
-            <label>标签（逗号分隔）</label>
-            <div class="tags-row">
-              <span v-for="t in tagList" :key="t" class="tag" @click="removeTag(t)">{{ t }} ×</span>
+            <label>自定义分类标签</label>
+            <div class="tag-create">
+              <input v-model="newTagName" placeholder="输入标签名称" />
+              <input type="color" v-model="newTagColor" class="color-picker" />
+              <button class="pill add-tag-btn" @click="addTagChip">＋ 新增标签</button>
             </div>
-            <input v-model="tagInput" placeholder="例：旅行,海边,日落" @blur="syncTags" @keyup.enter="syncTags" />
+            <div class="tags-row chips">
+              <span
+                v-for="t in tagList"
+                :key="t.name"
+                class="tag-chip"
+                :style="{ background: t.color + '33', color: '#b05f7a', borderColor: t.color }"
+                @click="removeTag(t.name)"
+              >
+                <span class="dot" :style="{ background: t.color }"></span>{{ t.name }} ×
+              </span>
+              <span v-if="!tagList.length" class="muted">点击“新增标签”创建自定义分类（不含 EXIF 标签）</span>
+            </div>
           </div>
 
           <div class="setting-item toggle-row">
@@ -319,13 +346,14 @@ function goBackHome() { router.push('/') }
         </ul>
       </section>
 
-      <footer>2025 Designed by hyk 用心记录每一份美好~</footer>
+      <div class="footer-wrapper">
+        <footer>2025 Designed by hyk 用心记录每一份美好~</footer>
+      </div>
     </main>
   </div>
 </template>
 
 <style scoped>
-
 .dashboard { display: flex; min-height: 100vh; background: linear-gradient(135deg, #ffeef5, #ffe5f0); color: #4b4b4b; }
 .sidebar { width: 220px; background: linear-gradient(180deg, #fff7fb, #ffeef5); border-right: 1px solid rgba(255, 190, 210, 0.6); padding: 20px; }
 .logo { display: flex; gap: 10px; margin-bottom: 20px; }
@@ -333,8 +361,8 @@ function goBackHome() { router.push('/') }
 .logo h1 { font-size: 18px; color: #ff4c8a; margin: 0; }
 .logo p { font-size: 11px; color: #b6788d; margin: 0; }
 nav a { display: block; padding: 8px 12px; border-radius: 12px; font-size: 13px; color: #6b3c4a; margin: 2px 0; cursor: pointer; }
-nav a:hover { background: rgba(255, 153, 187, 0.16); color: #ff4c8a; }
-main { flex: 1; display: flex; flex-direction: column; }
+nav a.active, nav a:hover { background: rgba(255, 153, 187, 0.16); color: #ff4c8a; }
+main { flex: 1; display: flex; flex-direction: column; min-height: 100vh; }
 .topbar { display: flex; justify-content: space-between; align-items: center; padding: 14px 24px; border-bottom: 1px solid rgba(255, 190, 210, 0.5); background: rgba(255, 255, 255, 0.9); }
 .topbar .title { font-weight: 600; color: #ff4c8a; }
 .topbar .subtitle { font-size: 12px; color: #a36e84; }
@@ -361,10 +389,13 @@ main { flex: 1; display: flex; flex-direction: column; }
 .radio-group { display: flex; gap: 8px; }
 .pill { border-radius: 999px; border: 1px solid rgba(255, 180, 205, 0.9); background: rgba(255, 255, 255, 0.9); font-size: 12px; padding: 4px 12px; cursor: pointer; }
 .pill.active { background: linear-gradient(135deg, #ff8bb3, #ff6fa0); color: #fff; }
-.tags-row { min-height: 24px; display: flex; flex-wrap: wrap; gap: 6px; }
-.tag { background: #ffe4f0; border-radius: 999px; padding: 2px 10px; font-size: 11px; color: #b05f7a; cursor: pointer; }
-.tag-input-row { margin-top: 6px; display: flex; gap: 6px; }
-.add-tag-btn { border-radius: 999px; border: none; padding: 4px 10px; font-size: 12px; cursor: pointer; background: #ffe3f0; color: #b05f7a; }
+.tag-create { display: flex; align-items: center; gap: 8px; }
+.tag-create .color-picker { width: 46px; height: 36px; padding: 4px; border-radius: 12px; border: 1px solid rgba(255, 190, 210, 0.9); background: #fff; cursor: pointer; }
+.add-tag-btn { border: none; color: #b05f7a; }
+.tags-row.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; min-height: 28px; }
+.tag-chip { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 999px; border: 1px solid transparent; font-size: 12px; cursor: pointer; }
+.tag-chip .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.muted { color: #b57a90; font-size: 12px; }
 .toggle-row { display: flex; align-items: center; justify-content: space-between; }
 .switch { position: relative; display: inline-block; width: 42px; height: 22px; }
 .switch input { opacity: 0; width: 0; height: 0; }
@@ -372,7 +403,7 @@ main { flex: 1; display: flex; flex-direction: column; }
 .slider:before { position: absolute; content: ''; height: 16px; width: 16px; left: 3px; bottom: 3px; background-color: white; transition: 0.2s; border-radius: 50%; }
 .switch input:checked + .slider { background: linear-gradient(135deg, #ff8bb3, #ff6fa0); }
 .switch input:checked + .slider:before { transform: translateX(18px); }
-.start-upload-btn { width: 100%; margin-top: 8px; border-radius: 999px; border: none; padding: 8px 0; background: linear-gradient(135deg, #ff8bb3, #ff6fa0); color: #fff; font-size: 14px; cursor: pointer; box-shadow: 0 10px 20px rgba(255, 120, 165, 0.45); }
+.start-upload-btn { width: 100%; margin-top: 8px; border-radius: 999px; border: none; padding: 10px 0; background: linear-gradient(135deg, #ff8bb3, #ff6fa0); color: #fff; font-size: 14px; cursor: pointer; box-shadow: 0 10px 20px rgba(255, 120, 165, 0.45); }
 .upload-queue-section { padding: 10px 24px 10px; }
 .upload-queue-section h3 { margin-bottom: 10px; color: #ff4c8a; }
 .empty-queue { background: rgba(255, 255, 255, 0.85); border-radius: 18px; padding: 18px; font-size: 13px; color: #a35d76; }
@@ -398,7 +429,8 @@ main { flex: 1; display: flex; flex-direction: column; }
 .small-btn { border: 1px solid #ffc8da; background: #ffeaf3; border-radius: 10px; padding: 4px 8px; font-size: 11px; cursor: pointer; color: #b05f7a; }
 .small-btn.danger { border-color: #ff9ea9; background: #ffe1e5; color: #d05565; }
 .remove-btn { border: none; background: transparent; font-size: 16px; cursor: pointer; color: #c27d98; }
-footer { text-align: center; font-size: 12px; color: #b57a90; padding: 10px 0 16px; }
+.footer-wrapper { margin-top: auto; display: flex; justify-content: center; padding: 12px 0 16px; }
+footer { text-align: center; font-size: 12px; color: #b57a90; }
 @media (max-width: 1100px) { .upload-layout { grid-template-columns: 1.5fr 1fr; } }
 @media (max-width: 900px) { .sidebar { display: none; } .upload-layout { grid-template-columns: 1fr; } }
 </style>

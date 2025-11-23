@@ -13,13 +13,36 @@ const detail = ref<any>(null)
 const loading = ref(true)
 const aiLoading = ref(false)
 const aiTags = ref<string[]>([])
-const aiDescription = ref('这里是一段 AI 生成的图片描述，点击按钮可更新。')
+const aiDescription = ref('这里是一个 AI 生成的图片描述，点击按钮可更新～')
 const newTag = ref('')
 
 const tokenParam = computed(() => (authStore.token ? `?jwt=${authStore.token}` : ''))
 const imageUrl = computed(() => (detail.value ? `${detail.value.raw_url}${tokenParam.value}` : ''))
 const thumbUrl = computed(() => (detail.value ? `${detail.value.thumb_url || detail.value.raw_url}${tokenParam.value}` : ''))
 const heroUrl = computed(() => imageUrl.value || thumbUrl.value)
+const exifTags = computed(() => {
+  if (!detail.value) return []
+  const arr = [detail.value.camera, detail.value.lens, detail.value.iso, detail.value.aperture, detail.value.exposure]
+    .filter(Boolean)
+    .map((v: string) => String(v))
+  return Array.from(new Set(arr))
+})
+
+const links = [
+  { label: '首页', icon: '🏠', path: '/' },
+  { label: '上传中心', icon: '☁️', path: '/upload' },
+  { label: '标签', icon: '🏷️', path: '/tags' },
+  { label: '文件夹', icon: '📁', path: '/folders' },
+  { label: '相册', icon: '📚', path: '/albums' },
+  { label: '智能分类', icon: '🧠', path: '/smart' },
+  { label: 'AI工作台', icon: '🤖', path: '/ai' },
+  { label: '任务中心', icon: '🧾', path: '/tasks' },
+  { label: '回收站', icon: '🗑️', path: '/recycle' },
+  { label: '设置', icon: '⚙️', path: '/settings' },
+]
+const currentPath = computed(() => router.currentRoute.value.path)
+function go(path: string) { router.push(path) }
+function isActive(path: string) { return currentPath.value === path || currentPath.value.startsWith(path + '/') }
 
 async function fetchDetail() {
   loading.value = true
@@ -54,9 +77,7 @@ function removeTag(t: string) {
   const left = (detail.value?.tags || []).filter((x: string) => x !== t)
   axios
     .post(`/api/v1/images/${route.params.id}/tags`, { tags: left })
-    .then(res => {
-      detail.value.tags = res.data.tags
-    })
+    .then(res => { detail.value.tags = res.data.tags })
     .catch(() => ElMessage.error('更新标签失败'))
 }
 
@@ -64,7 +85,6 @@ function formatDate(d?: string) {
   if (!d) return '--'
   return d.replace('T', ' ').slice(0, 16)
 }
-
 function formatSize(size?: number) {
   if (!size) return '--'
   const mb = size / 1024 / 1024
@@ -81,13 +101,8 @@ function generateAiTags() {
   }, 800)
 }
 
-function goBack() {
-  router.back()
-}
-function logout() {
-  authStore.logout()
-  router.push('/auth/login')
-}
+function goBack() { router.back() }
+function logout() { authStore.logout(); router.push('/auth/login') }
 
 onMounted(fetchDetail)
 </script>
@@ -104,15 +119,14 @@ onMounted(fetchDetail)
       </div>
 
       <nav>
-        <a @click="router.push('/')">🏠 首页</a>
-        <a @click="router.push('/upload')">☁️ 上传</a>
-        <a>📁 文件夹</a>
-        <a>🏷️ 标签</a>
-        <a>🧠 智能分类</a>
-        <a>🤖 AI 工作流</a>
-        <a>🧾 任务</a>
-        <a>🗑️ 回收站</a>
-        <a>⚙️ 设置</a>
+        <a
+          v-for="item in links"
+          :key="item.path"
+          :class="{ active: isActive(item.path) }"
+          @click="go(item.path)"
+        >
+          {{ item.icon }} {{ item.label }}
+        </a>
       </nav>
     </aside>
 
@@ -124,6 +138,7 @@ onMounted(fetchDetail)
         </div>
         <div class="right">
           <button class="pill-btn ghost" @click="goBack">返回</button>
+          <button class="pill-btn ghost" @click="go('/tags')">标签管理</button>
           <button class="pill-btn">在线编辑</button>
           <button class="pill-btn ghost" :disabled="!imageUrl" @click="() => imageUrl && window.open(imageUrl, '_blank')">下载</button>
           <button class="icon-btn" title="退出登录" @click="logout">🚪</button>
@@ -145,16 +160,39 @@ onMounted(fetchDetail)
             <h3>基本信息</h3>
             <div class="field"><label>标题</label><div class="value">{{ detail.name }}</div></div>
             <div class="field"><label>描述</label><div class="value muted">（预留描述，后续可编辑）</div></div>
+
             <div class="field tags">
-              <label>标签</label>
+              <label>自定义标签</label>
               <div class="tag-list">
                 <span v-for="t in detail.tags" :key="t" class="tag" @click="removeTag(t)">{{ t }} ×</span>
+                <span v-if="!detail.tags?.length" class="muted">暂无自定义标签</span>
               </div>
               <div class="tag-input">
                 <input v-model="newTag" placeholder="输入新标签后回车" @keyup.enter="addTag" />
                 <button class="pill-btn mini" @click="addTag">添加</button>
               </div>
             </div>
+
+            <div class="field tags">
+              <label>EXIF 标签</label>
+              <div class="tag-list readonly">
+                <span v-for="t in exifTags" :key="t" class="tag ghost">{{ t }}</span>
+                <span v-if="!exifTags.length" class="muted">暂无 EXIF 标签</span>
+              </div>
+            </div>
+
+            <div class="field tags">
+              <label>AI 标签</label>
+              <div class="tag-list">
+                <span v-for="t in aiTags" :key="t" class="tag alt">{{ t }}</span>
+                <span v-if="!aiTags.length" class="muted">暂无 AI 标签</span>
+              </div>
+              <div class="value">{{ aiDescription }}</div>
+              <button class="pill-btn mini" :disabled="aiLoading" @click="generateAiTags">
+                {{ aiLoading ? '生成中…' : '更新 AI 分析' }}
+              </button>
+            </div>
+
             <div class="field">
               <label>可见性</label>
               <span class="chip" :class="detail.visibility === 'public' ? 'primary' : 'muted'">
@@ -177,19 +215,6 @@ onMounted(fetchDetail)
               <div><label>纬度</label><div>{{ detail.latitude ?? '--' }}</div></div>
               <div><label>经度</label><div>{{ detail.longitude ?? '--' }}</div></div>
             </div>
-          </div>
-
-          <div class="panel">
-            <h3>AI 标签与描述</h3>
-            <p class="muted">这是一个占位的 AI 分析区域，后续可接入真实模型。</p>
-            <div class="tag-list">
-              <span v-for="t in aiTags" :key="t" class="tag alt">{{ t }}</span>
-              <span v-if="!aiTags.length" class="muted">暂无 AI 标签</span>
-            </div>
-            <div class="value">{{ aiDescription }}</div>
-            <button class="pill-btn full" :disabled="aiLoading" @click="generateAiTags">
-              {{ aiLoading ? '生成中…' : '更新 AI 分析' }}
-            </button>
           </div>
 
           <div class="panel">
@@ -221,7 +246,7 @@ onMounted(fetchDetail)
 .logo h1 { font-size: 18px; color: #ff4c8a; margin: 0; }
 .logo p { font-size: 11px; color: #b6788d; margin: 0; }
 nav a { display: block; padding: 8px 12px; border-radius: 12px; font-size: 13px; color: #6b3c4a; margin: 2px 0; cursor: pointer; }
-nav a:hover { background: rgba(255, 153, 187, 0.16); color: #ff4c8a; }
+nav a.active, nav a:hover { background: rgba(255, 153, 187, 0.16); color: #ff4c8a; }
 
 main { flex: 1; display: flex; flex-direction: column; }
 .topbar { display: flex; justify-content: space-between; align-items: center; padding: 14px 24px; border-bottom: 1px solid rgba(255, 190, 210, 0.5); background: rgba(255, 255, 255, 0.9); }
@@ -253,6 +278,7 @@ main { flex: 1; display: flex; flex-direction: column; }
 .tag-list { display: flex; flex-wrap: wrap; gap: 6px; }
 .tag { background: #ffe4f0; border-radius: 999px; padding: 4px 10px; font-size: 12px; color: #b05f7a; cursor: pointer; }
 .tag.alt { background: #ffeef5; }
+.tag.ghost { background: #f4f4f4; color: #7a7a7a; cursor: default; }
 .tag-input { display: flex; gap: 8px; margin-top: 6px; }
 .tag-input input { flex: 1; border-radius: 12px; border: 1px solid rgba(255, 190, 210, 0.9); padding: 6px 10px; font-size: 13px; outline: none; }
 

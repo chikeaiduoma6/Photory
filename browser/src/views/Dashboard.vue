@@ -11,6 +11,7 @@ interface GalleryImage {
   created_at?: string
   thumbUrl: string
   fullUrl: string
+  tags?: string[]
 }
 
 const router = useRouter()
@@ -20,7 +21,7 @@ const username = computed(() => authStore.user?.username || '访客')
 const viewMode = ref<'grid' | 'masonry' | 'large'>('grid')
 const sortOrder = ref<'newest' | 'oldest'>('newest')
 const currentPage = ref(1)
-const pageSize = ref(12)
+const pageSize = ref(12) // 每页 12 张
 const isBatchMode = ref(false)
 const selectedIds = ref<number[]>([])
 const images = ref<GalleryImage[]>([])
@@ -28,6 +29,24 @@ const total = ref(0)
 const loading = ref(false)
 
 const tasksCount = computed(() => 0)
+const hasImages = computed(() => images.value.length > 0)
+const galleryClass = computed(() => ['gallery', hasImages.value ? viewMode.value : 'empty'])
+
+const links = [
+  { label: '首页', icon: '🏠', path: '/' },
+  { label: '上传中心', icon: '☁️', path: '/upload' },
+  { label: '标签', icon: '🏷️', path: '/tags' },
+  { label: '文件夹', icon: '📁', path: '/folders' },
+  { label: '相册', icon: '📚', path: '/albums' },
+  { label: '智能分类', icon: '🧠', path: '/smart' },
+  { label: 'AI工作台', icon: '🤖', path: '/ai' },
+  { label: '任务中心', icon: '🧾', path: '/tasks' },
+  { label: '回收站', icon: '🗑️', path: '/recycle' },
+  { label: '设置', icon: '⚙️', path: '/settings' },
+]
+const currentPath = computed(() => router.currentRoute.value.path)
+function go(path: string) { router.push(path) }
+function isActive(path: string) { return currentPath.value === path || currentPath.value.startsWith(path + '/') }
 
 async function fetchImages() {
   loading.value = true
@@ -50,9 +69,7 @@ async function fetchImages() {
   }
 }
 
-onMounted(() => {
-  if (authStore.token) fetchImages()
-})
+onMounted(() => { if (authStore.token) fetchImages() })
 watch(
   () => authStore.token,
   token => {
@@ -62,39 +79,22 @@ watch(
   }
 )
 
-function handlePageChange(p: number) {
-  currentPage.value = p
-  fetchImages()
-}
-function changeView(mode: 'grid' | 'masonry' | 'large') {
-  viewMode.value = mode
-}
+function handlePageChange(p: number) { currentPage.value = p; fetchImages() }
+function changeView(mode: 'grid' | 'masonry' | 'large') { viewMode.value = mode }
 function toggleBatchMode() {
   isBatchMode.value = !isBatchMode.value
   if (!isBatchMode.value) selectedIds.value = []
 }
 function toggleSelect(id: number) {
-  if (!isBatchMode.value) {
-    router.push(`/images/${id}`)
-    return
-  }
+  if (!isBatchMode.value) { router.push(`/images/${id}`); return }
   const i = selectedIds.value.indexOf(id)
   if (i >= 0) selectedIds.value.splice(i, 1)
   else selectedIds.value.push(id)
 }
-function isSelected(id: number) {
-  return selectedIds.value.includes(id)
-}
-function logout() {
-  authStore.logout()
-  ElMessage.success('已退出登录')
-  router.push('/auth/login')
-}
-function upload() {
-  router.push('/upload')
-}
+function isSelected(id: number) { return selectedIds.value.includes(id) }
+function logout() { authStore.logout(); ElMessage.success('已退出登录'); router.push('/auth/login') }
+function upload() { router.push('/upload') }
 </script>
-
 
 <template>
   <div class="dashboard">
@@ -108,22 +108,21 @@ function upload() {
       </div>
 
       <nav>
-        <a class="active">🏠 首页</a>
-        <a>📚 相册</a>
-        <a>📁 文件夹</a>
-        <a>🏷️ 标签</a>
-        <a>🧠 智能分类</a>
-        <a>🤖 AI 工作流</a>
-        <a>🧾 任务</a>
-        <a>🗑️ 回收站</a>
-        <a>⚙️ 设置</a>
+        <a
+          v-for="item in links"
+          :key="item.path"
+          :class="{ active: isActive(item.path) }"
+          @click="go(item.path)"
+        >
+          {{ item.icon }} {{ item.label }}
+        </a>
       </nav>
     </aside>
 
     <main>
       <header class="topbar">
         <div class="left">
-          <div class="title">今天也要好好记录生活吧</div>
+          <div class="title">今天也要好好记录生活哦～</div>
           <div class="subtitle">Photory 记录你的每一张 photo 下的温柔 story</div>
         </div>
 
@@ -138,9 +137,7 @@ function upload() {
         <div class="hero-left">
           <div class="badge">今日心情 · 小小记录</div>
           <h2>让美好永远留在心底 🌸</h2>
-          <p>
-            这里是你的专属回忆小宇宙，生活里的每一朵花、每一片天空、每一场落日，都值得被认真记录。
-          </p>
+          <p>这里是你的专属回忆小宇宙，生活里的每一朵花、每一片天空、每一场落日，都值得被认真记录～</p>
           <div class="stats">
             <div><b>{{ total }}</b><span>图片总数</span></div>
             <div><b>1</b><span>今日上传</span></div>
@@ -149,7 +146,7 @@ function upload() {
         </div>
 
         <div class="hero-right">
-          <div class="hero-img"><span>🌷 Photory 等你来探索哦！</span></div>
+          <div class="hero-img"><span>🌷 Photory 等你来探索哦～</span></div>
         </div>
       </section>
 
@@ -172,14 +169,17 @@ function upload() {
           <div class="sort">
             <span>排序：</span>
             <button class="sort-pill" :class="{ active: sortOrder === 'newest' }" @click="sortOrder = 'newest'; fetchImages()">最新上传</button>
-            <button class="sort-pill" :class="{ active: sortOrder === 'oldest' }" @click="sortOrder = 'oldest'; fetchImages()">最早记载</button>
+            <button class="sort-pill" :class="{ active: sortOrder === 'oldest' }" @click="sortOrder = 'oldest'; fetchImages()">最早记录</button>
           </div>
         </div>
       </section>
 
-      <section class="gallery" :class="viewMode">
-        <div v-if="!loading && images.length === 0" class="empty-tip">
-          你的图库还是空空如也哦，快来上传第一张图片吧～
+      <section :class="galleryClass">
+        <div v-if="!loading && images.length === 0" class="empty-box">
+          <div class="empty-row">
+            <span>你的图库还是空空如也哦，</span>
+            <span>快来上传第一张图片吧～</span>
+          </div>
         </div>
         <div
           v-for="img in images"
@@ -198,23 +198,23 @@ function upload() {
         </div>
       </section>
 
-      <el-pagination
-        background
-        layout="prev, pager, next"
-        :total="total"
-        :page-size="pageSize"
-        :current-page="currentPage"
-        @current-change="handlePageChange"
-        class="pagination"
-      />
-
-      <footer>2025 Designed by hyk 用心记录每一份美好~</footer>
+      <div class="footer-wrapper">
+        <el-pagination
+          background
+          layout="prev, pager, next"
+          :total="total"
+          :page-size="pageSize"
+          :current-page="currentPage"
+          @current-change="handlePageChange"
+          class="pagination"
+        />
+        <footer>2025 Designed by hyk 用心记录每一份美好~</footer>
+      </div>
     </main>
   </div>
 </template>
 
 <style scoped>
-
 .dashboard { display: flex; min-height: 100vh; background: linear-gradient(135deg, #ffeef5, #ffe5f0); color: #4b4b4b; }
 .sidebar { width: 220px; background: linear-gradient(180deg, #fff7fb, #ffeef5); border-right: 1px solid rgba(255, 190, 210, 0.6); padding: 20px; }
 .logo { display: flex; gap: 10px; margin-bottom: 20px; }
@@ -223,7 +223,7 @@ function upload() {
 .logo p { font-size: 11px; color: #b6788d; margin: 0; }
 nav a { display: block; padding: 8px 12px; border-radius: 12px; font-size: 13px; color: #6b3c4a; margin: 2px 0; cursor: default; }
 nav a.active, nav a:hover { background: rgba(255, 153, 187, 0.16); color: #ff4c8a; }
-main { flex: 1; display: flex; flex-direction: column; }
+main { flex: 1; display: flex; flex-direction: column; min-height: 100vh; }
 .topbar { display: flex; justify-content: space-between; align-items: center; padding: 14px 24px; border-bottom: 1px solid rgba(255, 190, 210, 0.5); background: rgba(255, 255, 255, 0.9); }
 .topbar .title { font-weight: 600; color: #ff4c8a; }
 .topbar .subtitle { font-size: 12px; color: #a36e84; }
@@ -261,6 +261,9 @@ main { flex: 1; display: flex; flex-direction: column; }
 .gallery.large .photo { display: flex; height: 190px; }
 .gallery.large .photo img { width: 45%; height: 100%; object-fit: cover; }
 .gallery.large .caption { flex: 1; padding: 16px; }
+.gallery.empty { display: flex !important; align-items: center; justify-content: center; width: 100%; }
+.empty-box { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; min-height: 320px; width: 100%; }
+.empty-row { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; font-size: 20px; color: #a35d76; text-align: center; }
 .photo { position: relative; border-radius: 18px; overflow: hidden; background: #ffeaf3; box-shadow: 0 10px 20px rgba(255, 153, 187, 0.28); cursor: pointer; transition: transform 0.15s ease, box-shadow 0.15s ease, border 0.15s ease; }
 .gallery.grid .photo { height: 230px; display: flex; flex-direction: column; }
 .photo img { width: 100%; height: 72%; object-fit: cover; background: #fce6f0; }
@@ -272,14 +275,14 @@ main { flex: 1; display: flex; flex-direction: column; }
 .photo.selected { border: 2px solid #ff6fa5; box-shadow: 0 0 0 2px rgba(255, 152, 201, 0.5), 0 10px 24px rgba(255, 152, 201, 0.5); }
 .select-badge { position: absolute; top: 8px; right: 8px; width: 22px; height: 22px; border-radius: 999px; background: rgba(255, 255, 255, 0.98); border: 1px solid #ff8cb7; display: flex; align-items: center; justify-content: center; font-size: 13px; color: #ff4c8a; z-index: 2; }
 .photo:hover { transform: translateY(-3px); box-shadow: 0 14px 26px rgba(255, 153, 187, 0.4); }
-.pagination { display: flex; justify-content: center; margin-bottom: 6px; }
+.footer-wrapper { display: flex; flex-direction: column; align-items: center; gap: 6px; margin-top: auto; padding-bottom: 16px; }
+.pagination { display: flex; justify-content: center; }
 :deep(.el-pagination.is-background .el-pager li) { background-color: #ffeef5; border-radius: 999px; color: #b26a84; }
 :deep(.el-pagination.is-background .el-pager li.is-active) { background: linear-gradient(135deg, #ff8bb3, #ff6fa0); color: #fff; }
 :deep(.el-pagination.is-background .el-pager li:hover) { background-color: #ffdce9; }
 :deep(.el-pagination button) { background-color: #ffeef5; border-radius: 999px; color: #b26a84; }
 :deep(.el-pagination button.is-disabled) { opacity: 0.5; }
-footer { text-align: center; font-size: 12px; color: #b57a90; padding-bottom: 16px; }
+footer { text-align: center; font-size: 12px; color: #b57a90; }
 @media (max-width: 1200px) { .gallery.grid { grid-template-columns: repeat(3, 1fr); } .gallery.masonry { column-count: 3; } }
 @media (max-width: 900px) { .sidebar { display: none; } .hero { grid-template-columns: 1fr; } .gallery.grid { grid-template-columns: repeat(2, 1fr); } .gallery.masonry { column-count: 2; } }
-.empty-tip { padding: 40px; text-align: center; color: #a35d76; }
 </style>

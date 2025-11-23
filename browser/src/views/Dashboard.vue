@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import axios from 'axios'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
 
 interface GalleryImage {
@@ -21,7 +21,7 @@ const username = computed(() => authStore.user?.username || '访客')
 const viewMode = ref<'grid' | 'masonry' | 'large'>('grid')
 const sortOrder = ref<'newest' | 'oldest'>('newest')
 const currentPage = ref(1)
-const pageSize = ref(12) // 每页 12 张
+const pageSize = ref(12)
 const isBatchMode = ref(false)
 const selectedIds = ref<number[]>([])
 const images = ref<GalleryImage[]>([])
@@ -94,6 +94,25 @@ function toggleSelect(id: number) {
 function isSelected(id: number) { return selectedIds.value.includes(id) }
 function logout() { authStore.logout(); ElMessage.success('已退出登录'); router.push('/auth/login') }
 function upload() { router.push('/upload') }
+
+function confirmPink(title: string, text: string) {
+  return ElMessageBox.confirm(text, title, {
+    confirmButtonText: '确定',
+    cancelButtonText: '取消',
+    type: 'warning',
+    customClass: 'pink-confirm',
+  })
+}
+function batchTrash() {
+  if (!selectedIds.value.length) return
+  confirmPink('移入回收站', `确定将选中的 ${selectedIds.value.length} 张图片移入回收站吗？`).then(() => {
+    images.value = images.value.filter(img => !selectedIds.value.includes(img.id))
+    total.value = images.value.length
+    selectedIds.value = []
+    isBatchMode.value = false
+    ElMessage.success('已移入回收站（请接通后端接口实际执行）')
+  }).catch(() => {})
+}
 </script>
 
 <template>
@@ -108,12 +127,7 @@ function upload() { router.push('/upload') }
       </div>
 
       <nav>
-        <a
-          v-for="item in links"
-          :key="item.path"
-          :class="{ active: isActive(item.path) }"
-          @click="go(item.path)"
-        >
+        <a v-for="item in links" :key="item.path" :class="{ active: isActive(item.path) }" @click="go(item.path)">
           {{ item.icon }} {{ item.label }}
         </a>
       </nav>
@@ -154,9 +168,10 @@ function upload() { router.push('/upload') }
         <div class="left">
           <button class="upload-btn" @click="upload">☁️ 上传图片</button>
           <button class="manage-btn" :class="{ active: isBatchMode }" @click="toggleBatchMode">
-            🧺 {{ isBatchMode ? '退出批量管理' : '批量管理' }}
+            🗑️ {{ isBatchMode ? '退出批量删除' : '批量删除' }}
           </button>
           <span v-if="isBatchMode" class="selected-tip">已选中 {{ selectedIds.length }} 张图</span>
+          <button v-if="isBatchMode && selectedIds.length" class="danger-btn" @click="batchTrash">确认删除到回收站</button>
         </div>
 
         <div class="right">
@@ -244,11 +259,12 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 100vh; }
 .hero-right .hero-img { width: 100%; height: 100%; min-height: 160px; border-radius: 24px; background: url('@/assets/pretty_flower.jpg') center/cover no-repeat; border: 8px solid rgba(255, 255, 255, 0.95); box-shadow: 0 18px 36px rgba(255, 167, 201, 0.45); position: relative; }
 .hero-img span { position: absolute; bottom: 14px; left: 16px; right: 16px; background: rgba(255, 255, 255, 0.9); border-radius: 999px; font-size: 12px; padding: 6px 12px; color: #a15773; text-align: center; }
 .toolbar { display: flex; justify-content: space-between; align-items: flex-start; padding: 6px 24px 0; }
-.toolbar .left { display: flex; align-items: center; gap: 10px; }
+.toolbar .left { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .upload-btn, .manage-btn { border: none; border-radius: 20px; padding: 8px 18px; cursor: pointer; background: linear-gradient(135deg, #ff8bb3, #ff6fa0); color: #fff; font-size: 13px; box-shadow: 0 4px 10px rgba(255, 120, 165, 0.4); }
 .manage-btn { background: linear-gradient(135deg, #ffb2cc, #ff8db8); }
 .manage-btn.active { background: linear-gradient(135deg, #fca9c9, #ff88b3); }
 .selected-tip { font-size: 12px; color: #a35d76; }
+.danger-btn { border: none; border-radius: 14px; padding: 6px 12px; background: linear-gradient(135deg, #ff9c9c, #ff6b6b); color: #fff; box-shadow: 0 4px 10px rgba(255,100,120,0.4); cursor: pointer; }
 .toolbar .right { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
 .view-switch, .sort { display: flex; align-items: center; gap: 8px; }
 .view-pill, .sort-pill { border-radius: 999px; border: 1px solid rgba(255, 180, 205, 0.9); background: rgba(255, 255, 255, 0.9); font-size: 12px; padding: 4px 12px; cursor: pointer; }
@@ -283,6 +299,9 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 100vh; }
 :deep(.el-pagination button) { background-color: #ffeef5; border-radius: 999px; color: #b26a84; }
 :deep(.el-pagination button.is-disabled) { opacity: 0.5; }
 footer { text-align: center; font-size: 12px; color: #b57a90; }
+:deep(.pink-confirm .el-message-box__title) { color: #ff4c8a; }
+:deep(.pink-confirm .el-button--primary) { background: linear-gradient(135deg, #ff8bb3, #ff6fa0); border: none; }
+:deep(.pink-confirm .el-button--default) { border-color: #ffb6cf; color: #b05f7a; }
 @media (max-width: 1200px) { .gallery.grid { grid-template-columns: repeat(3, 1fr); } .gallery.masonry { column-count: 3; } }
 @media (max-width: 900px) { .sidebar { display: none; } .hero { grid-template-columns: 1fr; } .gallery.grid { grid-template-columns: repeat(2, 1fr); } .gallery.masonry { column-count: 2; } }
 </style>

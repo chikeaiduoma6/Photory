@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
@@ -104,6 +104,21 @@ function generateAiTags() {
 function goBack() { router.back() }
 function logout() { authStore.logout(); router.push('/auth/login') }
 
+function confirmPink(title: string, text: string) {
+  return ElMessageBox.confirm(text, title, {
+    confirmButtonText: '确定',
+    cancelButtonText: '取消',
+    type: 'warning',
+    customClass: 'pink-confirm',
+  })
+}
+function softDelete() {
+  confirmPink('删除图片', '确定将此图片移入回收站吗？').then(() => {
+    ElMessage.success('已移入回收站（请接通后端接口实际执行）')
+    router.push('/recycle')
+  }).catch(() => {})
+}
+
 onMounted(fetchDetail)
 </script>
 
@@ -139,7 +154,7 @@ onMounted(fetchDetail)
         <div class="right">
           <button class="pill-btn ghost" @click="goBack">返回</button>
           <button class="pill-btn ghost" @click="go('/tags')">标签管理</button>
-          <button class="pill-btn">在线编辑</button>
+          <button class="pill-btn" @click="softDelete">删除到回收站</button>
           <button class="pill-btn ghost" :disabled="!imageUrl" @click="() => imageUrl && window.open(imageUrl, '_blank')">下载</button>
           <button class="icon-btn" title="退出登录" @click="logout">🚪</button>
         </div>
@@ -257,44 +272,35 @@ main { flex: 1; display: flex; flex-direction: column; }
 .icon-btn:hover { background: #ffd6e5; }
 .pill-btn { border: none; border-radius: 999px; padding: 8px 14px; background: linear-gradient(135deg, #ff8bb3, #ff6fa0); color: #fff; font-size: 13px; cursor: pointer; box-shadow: 0 4px 10px rgba(255, 120, 165, 0.4); }
 .pill-btn.ghost { background: #ffeef5; color: #b05f7a; box-shadow: none; border: 1px solid rgba(255, 180, 205, 0.7); }
-.pill-btn.full { width: 100%; margin-top: 10px; }
 .pill-btn.mini { padding: 6px 12px; font-size: 12px; }
 .pill-btn:disabled { opacity: 0.7; cursor: not-allowed; }
-
 .detail-layout { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; padding: 16px 20px 10px; }
 .image-card { background: #fff; border-radius: 22px; padding: 16px; box-shadow: 0 12px 28px rgba(255, 165, 199, 0.25); display: flex; flex-direction: column; gap: 10px; }
 .hero-img { width: 100%; border-radius: 18px; object-fit: contain; background: #f9f1f6; max-height: 68vh; }
 .image-actions { display: flex; gap: 10px; font-size: 12px; color: #a35d76; }
-
 .info-panel { display: flex; flex-direction: column; gap: 12px; }
 .panel { background: rgba(255, 255, 255, 0.92); border-radius: 20px; padding: 14px 16px; box-shadow: 0 10px 22px rgba(255, 165, 199, 0.2); }
 .panel h3 { margin: 0 0 10px; color: #ff4c8a; }
-
 .field { margin-bottom: 10px; }
 .field label { font-size: 12px; color: #a35d76; display: block; margin-bottom: 4px; }
 .value { font-size: 14px; color: #4b4b4b; }
 .muted { color: #b57a90; font-size: 13px; }
-
 .tag-list { display: flex; flex-wrap: wrap; gap: 6px; }
 .tag { background: #ffe4f0; border-radius: 999px; padding: 4px 10px; font-size: 12px; color: #b05f7a; cursor: pointer; }
 .tag.alt { background: #ffeef5; }
 .tag.ghost { background: #f4f4f4; color: #7a7a7a; cursor: default; }
 .tag-input { display: flex; gap: 8px; margin-top: 6px; }
 .tag-input input { flex: 1; border-radius: 12px; border: 1px solid rgba(255, 190, 210, 0.9); padding: 6px 10px; font-size: 13px; outline: none; }
-
 .chip { display: inline-flex; align-items: center; padding: 4px 10px; border-radius: 999px; font-size: 12px; background: #ffeef5; color: #b05f7a; }
 .chip.primary { background: linear-gradient(135deg, #ff8bb3, #ff6fa0); color: #fff; }
-
 .exif-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 12px; }
 .exif-grid label { font-size: 12px; color: #a35d76; }
-
 .history-card { display: flex; align-items: center; gap: 10px; background: #fff4f8; border-radius: 14px; padding: 10px; }
 .history-card img { width: 56px; height: 56px; object-fit: cover; border-radius: 10px; }
-
 footer { text-align: center; font-size: 12px; color: #b57a90; padding: 12px 0 16px; }
-
 .loading { display: flex; align-items: center; justify-content: center; height: 100vh; color: #a35d76; }
-@media (max-width: 1100px) {
-  .detail-layout { grid-template-columns: 1fr; }
-}
+:deep(.pink-confirm .el-message-box__title) { color: #ff4c8a; }
+:deep(.pink-confirm .el-button--primary) { background: linear-gradient(135deg, #ff8bb3, #ff6fa0); border: none; }
+:deep(.pink-confirm .el-button--default) { border-color: #ffb6cf; color: #b05f7a; }
+@media (max-width: 1100px) { .detail-layout { grid-template-columns: 1fr; } }
 </style>

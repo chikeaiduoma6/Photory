@@ -27,8 +27,9 @@ const selectedIds = ref<number[]>([])
 const images = ref<GalleryImage[]>([])
 const total = ref(0)
 const loading = ref(false)
+const todayDeleted = ref(0)
 
-const tasksCount = computed(() => 0)
+const tasksCount = computed(() => todayDeleted.value) 
 const hasImages = computed(() => images.value.length > 0)
 const galleryClass = computed(() => ['gallery', hasImages.value ? viewMode.value : 'empty'])
 
@@ -48,13 +49,20 @@ const currentPath = computed(() => router.currentRoute.value.path)
 function go(path: string) { router.push(path) }
 function isActive(path: string) { return currentPath.value === path || currentPath.value.startsWith(path + '/') }
 
+function fallbackToRaw(event: Event, url: string) {
+  const img = event.target as HTMLImageElement | null
+  if (img && img.src !== url) img.src = url
+}
+
 async function fetchImages() {
   loading.value = true
   try {
     const res = await axios.get('/api/v1/images', {
       params: { page: currentPage.value, page_size: pageSize.value, sort: sortOrder.value },
     })
+    // 这里直接用字符串
     const tokenParam = authStore.token ? `?jwt=${authStore.token}` : ''
+
     images.value = (res.data.items || []).map((item: any) => ({
       ...item,
       thumbUrl: (item.thumb_url || `/api/v1/images/${item.id}/thumb`) + tokenParam,
@@ -69,12 +77,22 @@ async function fetchImages() {
   }
 }
 
-onMounted(() => { if (authStore.token) fetchImages() })
+
+async function fetchStats() {
+  try {
+    const res = await axios.get('/api/v1/images/stats')
+    todayDeleted.value = res.data.today_deleted || 0
+  } catch (err) {
+    // ignore
+  }
+}
+
+onMounted(() => { if (authStore.token) { fetchImages(); fetchStats() } })
 watch(
   () => authStore.token,
   token => {
     currentPage.value = 1
-    if (token) fetchImages()
+    if (token) { fetchImages(); fetchStats() }
     else images.value = []
   }
 )
@@ -103,15 +121,21 @@ function confirmPink(title: string, text: string) {
     customClass: 'pink-confirm',
   })
 }
-function batchTrash() {
+async function batchTrash() {
   if (!selectedIds.value.length) return
-  confirmPink('移入回收站', `确定将选中的 ${selectedIds.value.length} 张图片移入回收站吗？`).then(() => {
-    images.value = images.value.filter(img => !selectedIds.value.includes(img.id))
+  const ids = [...selectedIds.value]
+  try {
+    await confirmPink('移入回收站', `确定将选中的 ${ids.length} 张图片移入回收站吗？`)
+    await axios.post('/api/v1/images/trash-batch', { ids })
+    images.value = images.value.filter(img => !ids.includes(img.id))
     total.value = images.value.length
     selectedIds.value = []
     isBatchMode.value = false
-    ElMessage.success('已移入回收站（请接通后端接口实际执行）')
-  }).catch(() => {})
+    await fetchStats()
+    ElMessage.success('已移入回收站')
+  } catch {
+    /* cancelled or failed */
+  }
 }
 </script>
 
@@ -155,7 +179,7 @@ function batchTrash() {
           <div class="stats">
             <div><b>{{ total }}</b><span>图片总数</span></div>
             <div><b>1</b><span>今日上传</span></div>
-            <div><b>{{ tasksCount }}</b><span>进行中的任务</span></div>
+            <div><b>{{ tasksCount }}</b><span>今日删除</span></div>
           </div>
         </div>
 
@@ -205,7 +229,8 @@ function batchTrash() {
           @click="toggleSelect(img.id)"
         >
           <div class="select-badge" v-if="isBatchMode"><span v-if="isSelected(img.id)">✓</span></div>
-          <img :src="img.thumbUrl" :alt="img.displayName" loading="lazy" />
+          <img :src="img.thumbUrl" :alt="img.displayName" loading="lazy" @error="fallbackToRaw($event, img.fullUrl)" />
+
           <div class="caption">
             <div class="title">{{ img.displayName }}</div>
             <div class="date">{{ img.created_at?.slice(0, 10) }}</div>

@@ -1,6 +1,6 @@
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, date
 from fractions import Fraction
 from typing import List
 
@@ -45,7 +45,6 @@ def _extract_exif(pil_img: PILImage.Image) -> dict:
     try:
         raw = pil_img.getexif()
         data = dict(raw.items()) if raw else {}
-        # HEIC/HEIF 部分场景 EXIF 只在 info["exif"] 中
         if not data and pil_img.info.get("exif"):
             try:
                 exif_obj = PILImage.Exif()
@@ -97,8 +96,8 @@ def _auto_tags(exif: dict, width: int, height: int) -> List[str]:
     if exif.get("taken_at"):
         ts = exif["taken_at"].replace("-", ":").split()[0].split(":")
         if len(ts) >= 2:
-            tags.append(ts[0])          # 年
-            tags.append(f"{ts[0]}-{ts[1]}")  # 年-月
+            tags.append(ts[0])
+            tags.append(f"{ts[0]}-{ts[1]}")
     if width and height:
         tags.append(f"{width}x{height}")
     if exif.get("iso"):
@@ -130,10 +129,18 @@ def _current_user_id() -> int:
     return int(get_jwt_identity())
 
 
+def _normalize_rel_path(path: str | None) -> str | None:
+    if not path:
+        return None
+    cleaned = os.path.normpath(path.replace("\\", "/")).lstrip("/\\")
+    return cleaned
+
+
 def _serialize_image(img: Image) -> dict:
     data = img.to_dict()
     data["raw_url"] = f"/api/v1/images/{img.id}/raw"
     data["thumb_url"] = f"/api/v1/images/{img.id}/thumb"
+    data["in_recycle"] = img.deleted_at is not None
     return data
 
 
@@ -146,6 +153,40 @@ def _positive_int(value, default: int, max_value: int | None = None) -> int:
     if max_value:
         num = min(num, max_value)
     return num
+
+
+def _query_user_images(user_id: int, include_deleted=False):
+    q = Image.query.filter_by(user_id=user_id)
+    if not include_deleted:
+        q = q.filter(Image.deleted_at.is_(None))
+    return q
+
+
+def _get_user_image(image_id: int, user_id: int, include_deleted: bool) -> Image:
+    return (
+        _query_user_images(user_id, include_deleted)
+        .filter(Image.id == image_id)
+        .first_or_404()
+    )
+
+
+def _remove_files(img: Image):
+    try:
+        rel = _normalize_rel_path(img.filename)
+        if rel:
+            disk_path = os.path.join(current_app.config["UPLOAD_DIR"], rel)
+            if os.path.exists(disk_path):
+                os.remove(disk_path)
+    except Exception:
+        pass
+    try:
+        rel = _normalize_rel_path(img.thumb_path)
+        if rel:
+            thumb_path = os.path.join(current_app.config["THUMB_DIR"], rel)
+            if os.path.exists(thumb_path):
+                os.remove(thumb_path)
+    except Exception:
+        pass
 
 
 @images_bp.post("/upload")
@@ -169,9 +210,9 @@ def upload():
         for f in files:
             orig_ext = f.filename.rsplit(".", 1)[-1].lower()
             is_heic = orig_ext in {"heic", "heif"}
-            ext = "jpg" if is_heic else orig_ext  # 转成 jpeg 方便浏览器显示
+            ext = "jpg" if is_heic else orig_ext
             file_token = uuid.uuid4().hex
-            rel_path = os.path.join(f"user_{user_id}", f"{file_token}.{ext}")
+            rel_path = _normalize_rel_path(os.path.join(f"user_{user_id}", f"{file_token}.{ext}"))
             disk_path = os.path.join(current_app.config["UPLOAD_DIR"], rel_path)
 
             if is_heic:
@@ -192,7 +233,7 @@ def upload():
             auto_tags = _auto_tags(exif, width, height)
             merged_tags = list(dict.fromkeys(tag_names + auto_tags))
 
-            thumb_rel = os.path.join(f"user_{user_id}", f"{file_token}_thumb.jpg")
+            thumb_rel = _normalize_rel_path(os.path.join(f"user_{user_id}", f"{file_token}_thumb.jpg"))
             thumb_disk = os.path.join(current_app.config["THUMB_DIR"], thumb_rel)
             try:
                 _save_thumb(disk_path, thumb_disk)
@@ -241,7 +282,7 @@ def list_images():
     page_size = _positive_int(request.args.get("page_size"), 12, 50)
     sort = request.args.get("sort", "newest")
 
-    query = Image.query.filter_by(user_id=user_id)
+    query = _query_user_images(user_id, include_deleted=False)
     folder = request.args.get("folder")
     if folder:
         query = query.filter(Image.folder == folder)
@@ -259,24 +300,117 @@ def list_images():
     )
 
 
+@images_bp.get("/stats")
+def image_stats():
+    user_id = _current_user_id()
+    today = date.today()
+    today_deleted = (
+        _query_user_images(user_id, include_deleted=True)
+        .filter(Image.deleted_at.isnot(None))
+        .filter(db.func.date(Image.deleted_at) == today)
+        .count()
+    )
+    total_active = _query_user_images(user_id, include_deleted=False).count()
+    recycle_count = _query_user_images(user_id, include_deleted=True).filter(Image.deleted_at.isnot(None)).count()
+    return jsonify({"today_deleted": today_deleted, "total_active": total_active, "recycle_count": recycle_count})
+
+
+@images_bp.get("/recycle")
+def list_recycle():
+    user_id = _current_user_id()
+    page = _positive_int(request.args.get("page"), 1)
+    page_size = _positive_int(request.args.get("page_size"), 12, 50)
+    query = _query_user_images(user_id, include_deleted=True).filter(Image.deleted_at.isnot(None))
+    pagination = query.order_by(Image.deleted_at.desc()).paginate(page=page, per_page=page_size, error_out=False)
+    return jsonify(
+        {
+            "items": [_serialize_image(img) for img in pagination.items],
+            "total": pagination.total,
+            "page": page,
+            "page_size": page_size,
+        }
+    )
+
+
+@images_bp.post("/trash-batch")
+def trash_batch():
+    user_id = _current_user_id()
+    data = request.get_json() or {}
+    ids = data.get("ids") or []
+    if not ids:
+        return jsonify({"message": "缺少图片 ID"}), 400
+    imgs = _query_user_images(user_id, include_deleted=True).filter(Image.id.in_(ids)).all()
+    for img in imgs:
+        img.deleted_at = datetime.utcnow()
+    db.session.commit()
+    return jsonify({"message": "ok", "count": len(imgs)})
+
+
+@images_bp.post("/<int:image_id>/trash")
+def trash_one(image_id: int):
+    user_id = _current_user_id()
+    img = _get_user_image(image_id, user_id, include_deleted=True)
+    if img.deleted_at:
+        return jsonify({"message": "已在回收站"}), 400
+    img.deleted_at = datetime.utcnow()
+    db.session.commit()
+    return jsonify({"message": "ok"})
+
+
+@images_bp.post("/recycle/restore")
+def recycle_restore():
+    user_id = _current_user_id()
+    data = request.get_json() or {}
+    ids = data.get("ids") or []
+    if not ids:
+        return jsonify({"message": "缺少图片 ID"}), 400
+    imgs = _query_user_images(user_id, include_deleted=True).filter(Image.id.in_(ids)).all()
+    for img in imgs:
+        img.deleted_at = None
+    db.session.commit()
+    return jsonify({"message": "ok", "restored": len(imgs)})
+
+
+@images_bp.post("/recycle/purge")
+def recycle_purge():
+    user_id = _current_user_id()
+    data = request.get_json() or {}
+    ids = data.get("ids") or []
+    if not ids:
+        return jsonify({"message": "缺少图片 ID"}), 400
+    imgs = _query_user_images(user_id, include_deleted=True).filter(Image.id.in_(ids)).all()
+    for img in imgs:
+        _remove_files(img)
+        db.session.delete(img)
+    db.session.commit()
+    return jsonify({"message": "ok", "deleted": len(imgs)})
+
+
+@images_bp.post("/recycle/clear")
+def recycle_clear():
+    user_id = _current_user_id()
+    imgs = _query_user_images(user_id, include_deleted=True).filter(Image.deleted_at.isnot(None)).all()
+    for img in imgs:
+        _remove_files(img)
+        db.session.delete(img)
+    db.session.commit()
+    return jsonify({"message": "ok", "deleted": len(imgs)})
+
+
 @images_bp.get("/<int:image_id>")
 def image_detail(image_id: int):
     user_id = _current_user_id()
-    img = Image.query.get_or_404(image_id)
-    if img.user_id != user_id:
-        return jsonify({"message": "无权限访问此图片"}), 403
+    img = _get_user_image(image_id, user_id, include_deleted=True)
     return jsonify(_serialize_image(img))
 
 
 @images_bp.get("/<int:image_id>/raw")
 def serve_raw(image_id: int):
     user_id = _current_user_id()
-    img = Image.query.get_or_404(image_id)
-    if img.user_id != user_id:
-        return jsonify({"message": "无权限访问此图片"}), 403
-
-    disk_path = os.path.join(current_app.config["UPLOAD_DIR"], img.filename)
-    if not os.path.exists(disk_path):
+    img = _get_user_image(image_id, user_id, include_deleted=True)
+    rel = _normalize_rel_path(img.filename)
+    disk_path = os.path.join(current_app.config["UPLOAD_DIR"], rel) if rel else None
+    if not disk_path or not os.path.exists(disk_path):
         return jsonify({"message": "文件不存在"}), 404
     return send_file(disk_path, mimetype=img.mime_type)
 
@@ -284,17 +418,17 @@ def serve_raw(image_id: int):
 @images_bp.get("/<int:image_id>/thumb")
 def serve_thumb(image_id: int):
     user_id = _current_user_id()
-    img = Image.query.get_or_404(image_id)
-    if img.user_id != user_id:
-        return jsonify({"message": "无权限访问此图片"}), 403
+    img = _get_user_image(image_id, user_id, include_deleted=True)
 
-    if img.thumb_path:
-        thumb_path = os.path.join(current_app.config["THUMB_DIR"], img.thumb_path)
+    thumb_rel = _normalize_rel_path(img.thumb_path)
+    if thumb_rel:
+        thumb_path = os.path.join(current_app.config["THUMB_DIR"], thumb_rel)
         if os.path.exists(thumb_path):
             return send_file(thumb_path, mimetype="image/jpeg")
 
-    disk_path = os.path.join(current_app.config["UPLOAD_DIR"], img.filename)
-    if not os.path.exists(disk_path):
+    rel = _normalize_rel_path(img.filename)
+    disk_path = os.path.join(current_app.config["UPLOAD_DIR"], rel) if rel else None
+    if not disk_path or not os.path.exists(disk_path):
         return jsonify({"message": "文件不存在"}), 404
     return send_file(disk_path, mimetype=img.mime_type)
 
@@ -302,9 +436,7 @@ def serve_thumb(image_id: int):
 @images_bp.post("/<int:image_id>/tags")
 def update_tags(image_id: int):
     user_id = _current_user_id()
-    img = Image.query.get_or_404(image_id)
-    if img.user_id != user_id:
-        return jsonify({"message": "无权限访问此图片"}), 403
+    img = _get_user_image(image_id, user_id, include_deleted=False)
 
     data = request.get_json() or {}
     tags = [t.strip() for t in data.get("tags", []) if t and t.strip()]

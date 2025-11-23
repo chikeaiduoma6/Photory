@@ -1,13 +1,15 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import axios from 'axios'
 import { useAuthStore } from '@/stores/auth'
 
 interface RecycleItem {
   id: number
   name: string
   thumbUrl: string
+  fullUrl: string
   deletedAt: string
   daysLeft: number
 }
@@ -37,12 +39,9 @@ const loading = ref(false)
 const currentPage = ref(1)
 const pageSize = ref(12)
 const selected = ref<number[]>([])
+const total = ref(0)
 
-const pagedItems = computed(() => {
-  const start = (currentPage.value - 1) * pageSize.value
-  return items.value.slice(start, start + pageSize.value)
-})
-const total = computed(() => items.value.length)
+const pagedItems = computed(() => items.value)
 const allSelected = computed(() => selected.value.length === items.value.length && items.value.length > 0)
 
 function toggleSelect(id: number) {
@@ -64,48 +63,72 @@ function confirmPink(title: string, text: string) {
   })
 }
 
-function restore(ids: number[]) {
-  if (!ids.length) return
-  confirmPink('还原图片', `确定还原选中的 ${ids.length} 张图片吗？`).then(() => {
-    items.value = items.value.filter(i => !ids.includes(i.id))
-    selected.value = selected.value.filter(id => !ids.includes(id))
-    ElMessage.success('已还原到正常列表（请接通后端接口实际恢复）')
-  }).catch(() => {})
+function fallbackToRaw(event: Event, url: string) {
+  const img = event.target as HTMLImageElement | null
+  if (img && img.src !== url) img.src = url
 }
-function purge(ids: number[]) {
-  if (!ids.length) return
-  confirmPink('永久删除', `确定要永久删除选中的 ${ids.length} 张图片吗？此操作不可恢复。`).then(() => {
-    items.value = items.value.filter(i => !ids.includes(i.id))
-    selected.value = selected.value.filter(id => !ids.includes(id))
-    ElMessage.success('已永久删除（请接通后端接口实际删除）')
-  }).catch(() => {})
+
+async function fetchRecycle() {
+  loading.value = true
+  try {
+    const res = await axios.get('/api/v1/images/recycle', { params: { page: currentPage.value, page_size: pageSize.value } })
+    const tokenParam = authStore.token ? `?jwt=${authStore.token}` : ''
+    items.value = (res.data.items || []).map((item: any) => ({
+      id: item.id,
+      name: item.name || item.original_name,
+      thumbUrl: (item.thumb_url || `/api/v1/images/${item.id}/thumb`) + tokenParam,
+      fullUrl: (item.raw_url || `/api/v1/images/${item.id}/raw`) + tokenParam,
+      deletedAt: (item.deleted_at || '').slice(0, 10),
+      daysLeft: item.deleted_at ? Math.max(0, 7 - Math.floor((Date.now() - new Date(item.deleted_at).getTime()) / (1000 * 60 * 60 * 24))) : 7,
+    }))
+    total.value = res.data.total || 0
+  } catch (err) {
+    ElMessage.error('获取回收站失败')
+  } finally {
+    loading.value = false
+  }
 }
-function clearAll() {
-  if (!items.value.length) return
-  confirmPink('清空回收站', '确定清空回收站中的所有图片吗？此操作不可恢复。').then(() => {
-    items.value = []
+
+async function restore(ids: number[]) {
+  if (!ids.length) return
+  try {
+    await confirmPink('还原图片', `确定还原选中的 ${ids.length} 张图片吗？`)
+    await axios.post('/api/v1/images/recycle/restore', { ids })
     selected.value = []
-    ElMessage.success('回收站已清空（请接通后端接口实际删除）')
-  }).catch(() => {})
+    await fetchRecycle()
+  } catch {
+    /* cancelled/failed */
+  }
+}
+async function purge(ids: number[]) {
+  if (!ids.length) return
+  try {
+    await confirmPink('永久删除', `确定要永久删除选中的 ${ids.length} 张图片吗？此操作不可恢复。`)
+    await axios.post('/api/v1/images/recycle/purge', { ids })
+    selected.value = []
+    await fetchRecycle()
+  } catch {
+    /* cancelled/failed */
+  }
+}
+async function clearAll() {
+  if (!items.value.length) return
+  try {
+    await confirmPink('清空回收站', '确定清空回收站中的所有图片吗？此操作不可恢复。')
+    await axios.post('/api/v1/images/recycle/clear')
+    selected.value = []
+    await fetchRecycle()
+  } catch {
+    /* cancelled/failed */
+  }
 }
 function handleRestoreOne(id: number) { restore([id]) }
 function handlePurgeOne(id: number) { purge([id]) }
 
-function handlePageChange(p: number) { currentPage.value = p }
+function handlePageChange(p: number) { currentPage.value = p; fetchRecycle() }
 
-function fetchMock() {
-  loading.value = true
-  setTimeout(() => {
-    items.value = [
-      { id: 1, name: '海浪', thumbUrl: 'https://images.unsplash.com/photo-1507525428034-b723cf961d3e?w=800', deletedAt: '2025-11-07', daysLeft: 3 },
-      { id: 2, name: '小猫', thumbUrl: 'https://images.unsplash.com/photo-1518791841217-8f162f1e1131?w=800', deletedAt: '2025-11-05', daysLeft: 5 },
-      { id: 3, name: '咖啡', thumbUrl: 'https://images.unsplash.com/photo-1509042239860-f550ce710b93?w=800', deletedAt: '2025-11-03', daysLeft: 7 },
-    ]
-    loading.value = false
-  }, 200)
-}
-
-onMounted(fetchMock)
+watch(() => authStore.token, token => { if (token) fetchRecycle() })
+onMounted(() => { if (authStore.token) fetchRecycle() })
 </script>
 
 <template>
@@ -173,7 +196,8 @@ onMounted(fetchMock)
         >
           <div class="select-dot" :class="{ on: selected.includes(img.id) }"></div>
           <div class="img-wrapper">
-            <img :src="img.thumbUrl" :alt="img.name" loading="lazy" />
+            <img :src="img.thumbUrl" :alt="img.name" loading="lazy" @error="fallbackToRaw($event, img.fullUrl)" />
+
             <div class="overlay">
               <button class="pill-btn" @click.stop="handleRestoreOne(img.id)">🔄 还原</button>
               <button class="pill-btn danger" @click.stop="handlePurgeOne(img.id)">🗑️ 永久删除</button>
@@ -204,6 +228,7 @@ onMounted(fetchMock)
 </template>
 
 <style scoped>
+
 .dashboard { display: flex; min-height: 100vh; background: linear-gradient(135deg, #ffeef5, #ffe5f0); color: #4b4b4b; }
 .sidebar { width: 220px; background: linear-gradient(180deg, #fff7fb, #ffeef5); border-right: 1px solid rgba(255, 190, 210, 0.6); padding: 20px; }
 .logo { display: flex; gap: 10px; margin-bottom: 20px; }

@@ -44,6 +44,13 @@ const currentPath = computed(() => router.currentRoute.value.path)
 function go(path: string) { router.push(path) }
 function isActive(path: string) { return currentPath.value === path || currentPath.value.startsWith(path + '/') }
 
+function fallbackToRaw(event: Event) {
+  const img = event.target as HTMLImageElement | null
+  const raw = imageUrl.value
+  if (img && raw && img.src !== raw) img.src = raw
+}
+
+
 async function fetchDetail() {
   loading.value = true
   try {
@@ -112,11 +119,15 @@ function confirmPink(title: string, text: string) {
     customClass: 'pink-confirm',
   })
 }
-function softDelete() {
-  confirmPink('删除图片', '确定将此图片移入回收站吗？').then(() => {
-    ElMessage.success('已移入回收站（请接通后端接口实际执行）')
+async function softDelete() {
+  try {
+    await confirmPink('删除图片', '确定将此图片移入回收站吗？')
+    await axios.post(`/api/v1/images/${route.params.id}/trash`)
+    ElMessage.success('已移入回收站')
     router.push('/recycle')
-  }).catch(() => {})
+  } catch {
+    /* cancelled/failed */
+  }
 }
 
 onMounted(fetchDetail)
@@ -154,7 +165,7 @@ onMounted(fetchDetail)
         <div class="right">
           <button class="pill-btn ghost" @click="goBack">返回</button>
           <button class="pill-btn ghost" @click="go('/tags')">标签管理</button>
-          <button class="pill-btn" @click="softDelete">删除到回收站</button>
+          <button class="pill-btn danger" @click="softDelete">删除到回收站</button>
           <button class="pill-btn ghost" :disabled="!imageUrl" @click="() => imageUrl && window.open(imageUrl, '_blank')">下载</button>
           <button class="icon-btn" title="退出登录" @click="logout">🚪</button>
         </div>
@@ -162,7 +173,8 @@ onMounted(fetchDetail)
 
       <section class="detail-layout">
         <div class="image-card">
-          <img :src="heroUrl" :alt="detail.name" class="hero-img" />
+          <img :src="heroUrl" :alt="detail.name" class="hero-img" @error="fallbackToRaw" />
+
           <div class="image-actions">
             <span>{{ formatSize(detail.size) }}</span>
             <span>{{ detail.width }} × {{ detail.height }}</span>
@@ -272,6 +284,7 @@ main { flex: 1; display: flex; flex-direction: column; }
 .icon-btn:hover { background: #ffd6e5; }
 .pill-btn { border: none; border-radius: 999px; padding: 8px 14px; background: linear-gradient(135deg, #ff8bb3, #ff6fa0); color: #fff; font-size: 13px; cursor: pointer; box-shadow: 0 4px 10px rgba(255, 120, 165, 0.4); }
 .pill-btn.ghost { background: #ffeef5; color: #b05f7a; box-shadow: none; border: 1px solid rgba(255, 180, 205, 0.7); }
+.pill-btn.danger { background: linear-gradient(135deg, #ff9c9c, #ff6b6b); }
 .pill-btn.mini { padding: 6px 12px; font-size: 12px; }
 .pill-btn:disabled { opacity: 0.7; cursor: not-allowed; }
 .detail-layout { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; padding: 16px 20px 10px; }

@@ -30,10 +30,14 @@ services:
       SECRET_KEY: ${SECRET_KEY:-dev-secret-change-me}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev-jwt-secret-change-me}
       DATABASE_URL: mysql+pymysql://${MYSQL_USER:-photouser}:${MYSQL_PASSWORD:-photopass}@db:3306/${MYSQL_DATABASE:-photomanager}
+      UPLOAD_DIR: /data/uploads
+      THUMB_DIR: /data/thumbs
     ports:
       - "5000:5000"
     volumes:
       - ./server:/app
+      - ./data/uploads:/data/uploads
+      - ./data/thumbs:/data/thumbs
 
   frontend:
     build: ./browser
@@ -44,9 +48,9 @@ services:
     ports:
       - "5173:5173"
     volumes:
-       - ./browser:/app
-       - /app/node_modules
-    command: ["npm","run","dev","--","--host"]
+      - ./browser:/app
+      - /app/node_modules
+    command: ["npm", "run", "dev", "--", "--host"]
 
-volumes: 
+volumes:
   db_data:

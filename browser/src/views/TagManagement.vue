@@ -248,7 +248,7 @@ onMounted(fetchFromServer)
         </div>
       </section>
 
-      <footer>2025 Designed by hyk · 标签管理</footer>
+      <footer>2025 Designed by hyk 用心记录每一份美好~</footer>
     </main>
 
     <el-dialog v-model="dialogVisible" :title="dialogMode === 'create' ? '新建标签' : '编辑标签'" width="360px">

@@ -62,6 +62,7 @@ class Image(db.Model):
     visibility = db.Column(db.String(16), default="private", nullable=False)
     folder = db.Column(db.String(128), default="默认图库", nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    deleted_at = db.Column(db.DateTime, nullable=True)
 
     user = db.relationship("User", backref=db.backref("images", lazy=True))
     tags = db.relationship("Tag", secondary=image_tags, lazy="joined")
@@ -90,5 +91,6 @@ class Image(db.Model):
             "visibility": self.visibility,
             "folder": self.folder or "默认图库",
             "created_at": self.created_at.isoformat(),
+            "deleted_at": self.deleted_at.isoformat() if self.deleted_at else None,
             "tags": [t.name for t in self.tags],
         }

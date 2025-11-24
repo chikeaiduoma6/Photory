@@ -14,7 +14,16 @@ class User(db.Model):
         self.password_hash = bcrypt.generate_password_hash(raw_password).decode("utf-8")
 
     def check_password(self, raw_password: str) -> bool:
-        return bcrypt.check_password_hash(self.password_hash, raw_password)
+        # 兼容旧/坏哈希；有效 bcrypt 走验证，坏哈希或明文则直接比对
+        if not self.password_hash:
+            return False
+        try:
+            if self.password_hash.startswith("$2"):
+                return bcrypt.check_password_hash(self.password_hash, raw_password)
+        except ValueError:
+            # bad bcrypt salt -> fall through to plain compare
+            pass
+        return self.password_hash == raw_password
 
     def to_dict(self) -> dict:
         return {
@@ -24,7 +33,6 @@ class User(db.Model):
             "is_admin": self.is_admin,
             "created_at": self.created_at.isoformat(),
         }
-
 
 image_tags = db.Table(
     "image_tags",

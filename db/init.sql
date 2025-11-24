@@ -145,5 +145,5 @@ CREATE TABLE job_queue (
 
 -- 默认管理员
 INSERT INTO users (username, email, password_hash, is_admin)
-SELECT 'hyk', '3230103921@zju.edu.cn', '$2b$12$examplehashchangeme', TRUE
+SELECT 'hyk', '3230103921@zju.edu.cn', 'bs2025123', TRUE
 WHERE NOT EXISTS (SELECT 1 FROM users WHERE username='hyk');

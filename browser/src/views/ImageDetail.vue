@@ -9,6 +9,9 @@ const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
 
+const apiBase = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '')
+const withBase = (path: string) => (!path ? '' : path.startsWith('http') ? path : `${apiBase}${path}`)
+
 const detail = ref<any>(null)
 const loading = ref(true)
 const aiLoading = ref(false)
@@ -17,8 +20,8 @@ const aiDescription = ref('这里是一个 AI 生成的图片描述，点击按�
 const newTag = ref('')
 
 const tokenParam = computed(() => (authStore.token ? `?jwt=${authStore.token}` : ''))
-const imageUrl = computed(() => (detail.value ? `${detail.value.raw_url}${tokenParam.value}` : ''))
-const thumbUrl = computed(() => (detail.value ? `${detail.value.thumb_url || detail.value.raw_url}${tokenParam.value}` : ''))
+const imageUrl = computed(() => (detail.value ? withBase(`${detail.value.raw_url}${tokenParam.value}`) : ''))
+const thumbUrl = computed(() => (detail.value ? withBase(`${detail.value.thumb_url || detail.value.raw_url}${tokenParam.value}`) : ''))
 const heroUrl = computed(() => imageUrl.value || thumbUrl.value)
 const exifTags = computed(() => {
   if (!detail.value) return []
@@ -35,21 +38,24 @@ const links = [
   { label: '文件夹', icon: '📁', path: '/folders' },
   { label: '相册', icon: '📚', path: '/albums' },
   { label: '智能分类', icon: '🧠', path: '/smart' },
-  { label: 'AI工作台', icon: '🤖', path: '/ai' },
+  { label: 'AI工作区', icon: '🤖', path: '/ai' },
   { label: '任务中心', icon: '🧾', path: '/tasks' },
   { label: '回收站', icon: '🗑️', path: '/recycle' },
   { label: '设置', icon: '⚙️', path: '/settings' },
 ]
 const currentPath = computed(() => router.currentRoute.value.path)
-function go(path: string) { router.push(path) }
-function isActive(path: string) { return currentPath.value === path || currentPath.value.startsWith(path + '/') }
+function go(path: string) {
+  router.push(path)
+}
+function isActive(path: string) {
+  return currentPath.value === path || currentPath.value.startsWith(path + '/')
+}
 
 function fallbackToRaw(event: Event) {
   const img = event.target as HTMLImageElement | null
   const raw = imageUrl.value
   if (img && raw && img.src !== raw) img.src = raw
 }
-
 
 async function fetchDetail() {
   loading.value = true
@@ -84,7 +90,9 @@ function removeTag(t: string) {
   const left = (detail.value?.tags || []).filter((x: string) => x !== t)
   axios
     .post(`/api/v1/images/${route.params.id}/tags`, { tags: left })
-    .then(res => { detail.value.tags = res.data.tags })
+    .then(res => {
+      detail.value.tags = res.data.tags
+    })
     .catch(() => ElMessage.error('更新标签失败'))
 }
 
@@ -108,8 +116,13 @@ function generateAiTags() {
   }, 800)
 }
 
-function goBack() { router.back() }
-function logout() { authStore.logout(); router.push('/auth/login') }
+function goBack() {
+  router.back()
+}
+function logout() {
+  authStore.logout()
+  router.push('/auth/login')
+}
 
 function confirmPink(title: string, text: string) {
   return ElMessageBox.confirm(text, title, {
@@ -128,6 +141,10 @@ async function softDelete() {
   } catch {
     /* cancelled/failed */
   }
+}
+
+function goEdit() {
+  router.push(`/images/${route.params.id}/edit`)
 }
 
 onMounted(fetchDetail)
@@ -164,6 +181,7 @@ onMounted(fetchDetail)
         </div>
         <div class="right">
           <button class="pill-btn ghost" @click="goBack">返回</button>
+          <button class="pill-btn ghost" @click="goEdit">在线编辑</button>
           <button class="pill-btn ghost" @click="go('/tags')">标签管理</button>
           <button class="pill-btn danger" @click="softDelete">删除到回收站</button>
           <button class="pill-btn ghost" :disabled="!imageUrl" @click="() => imageUrl && window.open(imageUrl, '_blank')">下载</button>

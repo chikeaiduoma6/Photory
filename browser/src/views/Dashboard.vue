@@ -29,7 +29,10 @@ const total = ref(0)
 const loading = ref(false)
 const todayDeleted = ref(0)
 
-const tasksCount = computed(() => todayDeleted.value) 
+const apiBase = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '')
+const withBase = (path: string) => (!path ? '' : path.startsWith('http') ? path : `${apiBase}${path}`)
+
+const tasksCount = computed(() => todayDeleted.value)
 const hasImages = computed(() => images.value.length > 0)
 const galleryClass = computed(() => ['gallery', hasImages.value ? viewMode.value : 'empty'])
 
@@ -40,14 +43,18 @@ const links = [
   { label: '文件夹', icon: '📁', path: '/folders' },
   { label: '相册', icon: '📚', path: '/albums' },
   { label: '智能分类', icon: '🧠', path: '/smart' },
-  { label: 'AI工作台', icon: '🤖', path: '/ai' },
+  { label: 'AI工作区', icon: '🤖', path: '/ai' },
   { label: '任务中心', icon: '🧾', path: '/tasks' },
   { label: '回收站', icon: '🗑️', path: '/recycle' },
   { label: '设置', icon: '⚙️', path: '/settings' },
 ]
 const currentPath = computed(() => router.currentRoute.value.path)
-function go(path: string) { router.push(path) }
-function isActive(path: string) { return currentPath.value === path || currentPath.value.startsWith(path + '/') }
+function go(path: string) {
+  router.push(path)
+}
+function isActive(path: string) {
+  return currentPath.value === path || currentPath.value.startsWith(path + '/')
+}
 
 function fallbackToRaw(event: Event, url: string) {
   const img = event.target as HTMLImageElement | null
@@ -60,13 +67,12 @@ async function fetchImages() {
     const res = await axios.get('/api/v1/images', {
       params: { page: currentPage.value, page_size: pageSize.value, sort: sortOrder.value },
     })
-    // 这里直接用字符串
     const tokenParam = authStore.token ? `?jwt=${authStore.token}` : ''
 
     images.value = (res.data.items || []).map((item: any) => ({
       ...item,
-      thumbUrl: (item.thumb_url || `/api/v1/images/${item.id}/thumb`) + tokenParam,
-      fullUrl: (item.raw_url || `/api/v1/images/${item.id}/raw`) + tokenParam,
+      thumbUrl: withBase((item.thumb_url || `/api/v1/images/${item.id}/thumb`) + tokenParam),
+      fullUrl: withBase((item.raw_url || `/api/v1/images/${item.id}/raw`) + tokenParam),
       displayName: item.name || item.original_name,
     }))
     total.value = res.data.total || 0
@@ -77,41 +83,63 @@ async function fetchImages() {
   }
 }
 
-
 async function fetchStats() {
   try {
     const res = await axios.get('/api/v1/images/stats')
     todayDeleted.value = res.data.today_deleted || 0
   } catch (err) {
-    // ignore
+    /* ignore */
   }
 }
 
-onMounted(() => { if (authStore.token) { fetchImages(); fetchStats() } })
+onMounted(() => {
+  if (authStore.token) {
+    fetchImages()
+    fetchStats()
+  }
+})
 watch(
   () => authStore.token,
   token => {
     currentPage.value = 1
-    if (token) { fetchImages(); fetchStats() }
-    else images.value = []
+    if (token) {
+      fetchImages()
+      fetchStats()
+    } else images.value = []
   }
 )
 
-function handlePageChange(p: number) { currentPage.value = p; fetchImages() }
-function changeView(mode: 'grid' | 'masonry' | 'large') { viewMode.value = mode }
+function handlePageChange(p: number) {
+  currentPage.value = p
+  fetchImages()
+}
+function changeView(mode: 'grid' | 'masonry' | 'large') {
+  viewMode.value = mode
+}
 function toggleBatchMode() {
   isBatchMode.value = !isBatchMode.value
   if (!isBatchMode.value) selectedIds.value = []
 }
 function toggleSelect(id: number) {
-  if (!isBatchMode.value) { router.push(`/images/${id}`); return }
+  if (!isBatchMode.value) {
+    router.push(`/images/${id}`)
+    return
+  }
   const i = selectedIds.value.indexOf(id)
   if (i >= 0) selectedIds.value.splice(i, 1)
   else selectedIds.value.push(id)
 }
-function isSelected(id: number) { return selectedIds.value.includes(id) }
-function logout() { authStore.logout(); ElMessage.success('已退出登录'); router.push('/auth/login') }
-function upload() { router.push('/upload') }
+function isSelected(id: number) {
+  return selectedIds.value.includes(id)
+}
+function logout() {
+  authStore.logout()
+  ElMessage.success('已退出登录')
+  router.push('/auth/login')
+}
+function upload() {
+  router.push('/upload')
+}
 
 function confirmPink(title: string, text: string) {
   return ElMessageBox.confirm(text, title, {

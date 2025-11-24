@@ -8,6 +8,10 @@ import App from './App.vue'
 import router from './router'
 import { useAuthStore } from './stores/auth'
 
+const API_BASE = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '')
+if (API_BASE) axios.defaults.baseURL = API_BASE
+axios.defaults.withCredentials = false
+
 axios.interceptors.request.use(config => {
   const token = localStorage.getItem('token') || ''
   if (token) {
@@ -24,7 +28,8 @@ axios.interceptors.response.use(
       localStorage.removeItem('token')
       localStorage.removeItem('user')
       delete axios.defaults.headers.common.Authorization
-      if (router.currentRoute.value.path !== '/auth/login') {
+      const cur = router.currentRoute.value.path
+      if (!cur.startsWith('/auth')) {
         router.push('/auth/login')
       }
     }

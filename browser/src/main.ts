@@ -8,7 +8,8 @@ import App from './App.vue'
 import router from './router'
 import { useAuthStore } from './stores/auth'
 
-const API_BASE = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '')
+const fallbackBase = typeof window !== 'undefined' ? window.location.origin : ''
+const API_BASE = (import.meta.env.VITE_API_URL || fallbackBase || '').replace(/\/$/, '')
 if (API_BASE) axios.defaults.baseURL = API_BASE
 axios.defaults.withCredentials = false
 

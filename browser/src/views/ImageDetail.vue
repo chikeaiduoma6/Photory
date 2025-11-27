@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -21,6 +21,11 @@ const aiTags = ref<string[]>([])
 const aiDescription = ref('这里是 AI 生成的图片描述，点击按钮可更新～')
 const newTag = ref('')
 const newTagColor = ref(palette[0])
+
+const navOpen = ref(false)
+const toggleNav = () => (navOpen.value = !navOpen.value)
+const closeNav = () => (navOpen.value = false)
+watch(() => router.currentRoute.value.fullPath, () => closeNav())
 
 const tokenParam = computed(() => (authStore.token ? `?jwt=${authStore.token}` : ''))
 const versionStamp = computed(() => (detail.value?.updated_at ? `&v=${encodeURIComponent(detail.value.updated_at)}` : ''))
@@ -49,19 +54,15 @@ const links = [
   { label: '文件夹', icon: '📁', path: '/folders' },
   { label: '相册', icon: '📚', path: '/albums' },
   { label: '智能分类', icon: '🧠', path: '/smart' },
-  { label: 'AI工作区', icon: '🤖', path: '/ai' },
+  { label: 'AI 工作台', icon: '🤖', path: '/ai' },
   { label: '任务中心', icon: '🧾', path: '/tasks' },
   { label: '回收站', icon: '🗑️', path: '/recycle' },
   { label: '设置', icon: '⚙️', path: '/settings' },
 ]
 
 const currentPath = computed(() => router.currentRoute.value.path)
-function go(path: string) {
-  router.push(path)
-}
-function isActive(path: string) {
-  return currentPath.value === path || currentPath.value.startsWith(path + '/')
-}
+function go(path: string) { router.push(path); closeNav() }
+function isActive(path: string) { return currentPath.value === path || currentPath.value.startsWith(path + '/') }
 
 function fallbackToRaw(event: Event) {
   const img = event.target as HTMLImageElement | null
@@ -143,13 +144,10 @@ function generateAiTags() {
   }, 800)
 }
 
-function goBack() {
-  router.back()
-}
-function logout() {
-  authStore.logout()
-  router.push('/auth/login')
-}
+function goBack() { router.back() }
+function logout() { authStore.logout(); router.push('/auth/login') }
+function goEdit() { router.push(`/images/${route.params.id}/edit`) }
+function download() { if (imageUrl.value) window.open(imageUrl.value, '_blank') }
 
 function confirmPink(title: string, text: string) {
   return ElMessageBox.confirm(text, title, {
@@ -168,10 +166,6 @@ async function softDelete() {
   } catch {
     /* cancelled/failed */
   }
-}
-
-function goEdit() {
-  router.push(`/images/${route.params.id}/edit`)
 }
 
 onMounted(fetchDetail)
@@ -201,6 +195,15 @@ onMounted(fetchDetail)
     </aside>
 
     <main>
+      <header class="mobile-topbar">
+        <button class="icon-btn ghost" @click="toggleNav">☰</button>
+        <div class="mobile-brand">
+          <span class="logo-mini">📷</span>
+          <span>{{ detail.name || detail.original_name || '图片详情' }}</span>
+        </div>
+        <button class="icon-btn ghost" @click="goBack">↩️</button>
+      </header>
+
       <header class="topbar">
         <div class="left">
           <div class="title">{{ detail.name || detail.original_name }}</div>
@@ -211,10 +214,31 @@ onMounted(fetchDetail)
           <button class="pill-btn ghost" @click="goEdit">在线编辑</button>
           <button class="pill-btn ghost" @click="go('/tags')">标签管理</button>
           <button class="pill-btn danger" @click="softDelete">删除到回收站</button>
-          <button class="pill-btn ghost" :disabled="!imageUrl" @click="() => imageUrl && window.open(imageUrl, '_blank')">下载</button>
+          <button class="pill-btn ghost" :disabled="!imageUrl" @click="download">下载</button>
           <button class="icon-btn" title="退出登录" @click="logout">🚪</button>
         </div>
       </header>
+
+      <div class="drawer" :class="{ open: navOpen }">
+        <div class="drawer-mask" @click="closeNav"></div>
+        <div class="drawer-panel">
+          <div class="drawer-head">
+            <div class="brand">
+              <div class="icon">📸</div>
+              <div class="text">
+                <h1>Photory</h1>
+                <p>随时随地 · 图片详情</p>
+              </div>
+            </div>
+            <button class="icon-btn ghost" @click="closeNav">✕</button>
+          </div>
+          <nav>
+            <a v-for="item in links" :key="item.path" :class="{ active: isActive(item.path) }" @click="go(item.path)">
+              {{ item.icon }} {{ item.label }}
+            </a>
+          </nav>
+        </div>
+      </div>
 
       <section class="detail-layout">
         <div class="image-card">
@@ -224,6 +248,12 @@ onMounted(fetchDetail)
             <span>{{ formatSize(detail.size) }}</span>
             <span>{{ detail.width }} × {{ detail.height }}</span>
             <span>{{ detail.visibility === 'public' ? '公开' : '私密' }}</span>
+          </div>
+
+          <div class="mobile-actions">
+            <button class="pill-btn ghost" @click="goEdit">在线编辑</button>
+            <button class="pill-btn ghost" @click="download" :disabled="!imageUrl">下载</button>
+            <button class="pill-btn danger" @click="softDelete">删除</button>
           </div>
         </div>
 
@@ -243,7 +273,7 @@ onMounted(fetchDetail)
                   :style="{ background: (t.color || '') + '22', color: '#b05f7a', borderColor: t.color || '#ff9db8' }"
                   @click="removeTag(t.name)"
                 >
-                  <span class="dot" :style="{ background: t.color }"></span>{{ t.name }} ×
+                  <span class="dot" :style="{ background: normalizeColor(t.color, idx, t.name) }"></span>{{ t.name }} ×
                 </span>
                 <span v-if="!customTags?.length" class="muted">暂无自定义标签</span>
               </div>
@@ -308,30 +338,34 @@ onMounted(fetchDetail)
 
 <style scoped>
 .dashboard { display: flex; min-height: 100vh; background: linear-gradient(135deg, #ffeef5, #ffe5f0); color: #4b4b4b; }
-.sidebar { width: 220px; background: linear-gradient(180deg, #fff7fb, #ffeef5); border-right: 1px solid rgba(255, 190, 210, 0.6); padding: 20px; }
+.sidebar { width: 240px; background: linear-gradient(180deg, #fff7fb, #ffeef5); border-right: 1px solid rgba(255, 190, 210, 0.6); padding: 20px; position: sticky; top: 0; height: 100vh; }
 .logo { display: flex; gap: 10px; margin-bottom: 20px; }
 .logo .icon { background: linear-gradient(135deg, #ff8bb3, #ff6fa0); width: 36px; height: 36px; border-radius: 10px; color: #fff; display: flex; align-items: center; justify-content: center; }
 .logo h1 { font-size: 18px; color: #ff4c8a; margin: 0; }
 .logo p { font-size: 11px; color: #b6788d; margin: 0; }
-nav a { display: block; padding: 8px 12px; border-radius: 12px; font-size: 13px; color: #6b3c4a; margin: 2px 0; cursor: pointer; }
+nav a { display: block; padding: 9px 12px; border-radius: 12px; font-size: 14px; color: #6b3c4a; margin: 4px 0; cursor: pointer; }
 nav a.active, nav a:hover { background: rgba(255, 153, 187, 0.16); color: #ff4c8a; }
 
 main { flex: 1; display: flex; flex-direction: column; }
-.topbar { display: flex; justify-content: space-between; align-items: center; padding: 14px 24px; border-bottom: 1px solid rgba(255, 190, 210, 0.5); background: rgba(255, 255, 255, 0.9); }
+.topbar { display: flex; justify-content: space-between; align-items: center; padding: 14px 24px; border-bottom: 1px solid rgba(255, 190, 210, 0.5); background: rgba(255, 255, 255, 0.9); gap: 10px; }
 .topbar .title { font-weight: 600; color: #ff4c8a; font-size: 18px; }
 .topbar .subtitle { font-size: 12px; color: #a36e84; }
-.topbar .right { display: flex; align-items: center; gap: 10px; }
+.topbar .right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .icon-btn { background: #ffeef5; border: none; border-radius: 50%; width: 32px; height: 32px; cursor: pointer; }
 .icon-btn:hover { background: #ffd6e5; }
+.icon-btn.ghost { background: rgba(255, 255, 255, 0.65); border: 1px solid rgba(255, 190, 210, 0.7); }
 .pill-btn { border: none; border-radius: 999px; padding: 8px 14px; background: linear-gradient(135deg, #ff8bb3, #ff6fa0); color: #fff; font-size: 13px; cursor: pointer; box-shadow: 0 4px 10px rgba(255, 120, 165, 0.4); }
 .pill-btn.ghost { background: #ffeef5; color: #b05f7a; box-shadow: none; border: 1px solid rgba(255, 180, 205, 0.7); }
 .pill-btn.danger { background: linear-gradient(135deg, #ff9c9c, #ff6b6b); }
 .pill-btn.mini { padding: 6px 12px; font-size: 12px; }
 .pill-btn:disabled { opacity: 0.7; cursor: not-allowed; }
-.detail-layout { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; padding: 16px 20px 10px; }
+
+.detail-layout { display: grid; grid-template-columns: 1.6fr 1fr; gap: 16px; padding: 16px 20px 10px; }
 .image-card { background: #fff; border-radius: 22px; padding: 16px; box-shadow: 0 12px 28px rgba(255, 165, 199, 0.25); display: flex; flex-direction: column; gap: 10px; }
-.hero-img { width: 100%; border-radius: 18px; object-fit: contain; background: #f9f1f6; max-height: 68vh; }
-.image-actions { display: flex; gap: 10px; font-size: 12px; color: #a35d76; }
+.hero-img { width: 100%; border-radius: 18px; object-fit: contain; background: #f9f1f6; max-height: 72vh; }
+.image-actions { display: flex; gap: 10px; font-size: 12px; color: #a35d76; flex-wrap: wrap; }
+.mobile-actions { display: none; gap: 8px; flex-wrap: wrap; }
+
 .info-panel { display: flex; flex-direction: column; gap: 12px; }
 .panel { background: rgba(255, 255, 255, 0.92); border-radius: 20px; padding: 14px 16px; box-shadow: 0 10px 22px rgba(255, 165, 199, 0.2); }
 .panel h3 { margin: 0 0 10px; color: #ff4c8a; }
@@ -349,10 +383,7 @@ main { flex: 1; display: flex; flex-direction: column; }
 .color-picker { width: 44px; height: 32px; padding: 0; border: 1px solid rgba(255, 190, 210, 0.9); border-radius: 8px; background: #fff; }
 .chip { display: inline-flex; align-items: center; padding: 4px 10px; border-radius: 999px; font-size: 12px; background: #ffeef5; color: #b05f7a; }
 .chip.primary { background: linear-gradient(135deg, #ff8bb3, #ff6fa0); color: #fff; }
-.exif-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 12px; }
-.exif-grid label { font-size: 12px; color: #a35d76; }
-.history-card { display: flex; align-items: center; gap: 10px; background: #fff4f8; border-radius: 14px; padding: 10px; }
-.history-card img { width: 56px; height: 56px; object-fit: cover; border-radius: 10px; }
+
 .version-list { display: flex; flex-direction: column; gap: 8px; }
 .version-item { display: flex; align-items: center; gap: 10px; background: #fff5f8; border-radius: 10px; padding: 8px 10px; }
 .version-item .dot { width: 10px; height: 10px; border-radius: 50%; background: #7ac7ff; }
@@ -362,9 +393,44 @@ main { flex: 1; display: flex; flex-direction: column; }
 .v-time { font-size: 12px; color: #b57a90; }
 
 footer { text-align: center; font-size: 12px; color: #b57a90; padding: 12px 0 16px; }
-.loading { display: flex; align-items: center; justify-content: center; height: 100vh; color: #a35d76; }
+.loading { display: flex; align-items: center; justify-content: center; height: 100vh; color: #a35d76; background: linear-gradient(135deg, #ffeef5, #ffe5f0); }
+
 :deep(.pink-confirm .el-message-box__title) { color: #ff4c8a; }
 :deep(.pink-confirm .el-button--primary) { background: linear-gradient(135deg, #ff8bb3, #ff6fa0); border: none; }
 :deep(.pink-confirm .el-button--default) { border-color: #ffb6cf; color: #b05f7a; }
+
+/* 移动端 */
+.mobile-topbar { display: none; align-items: center; justify-content: space-between; padding: 10px 16px 0; gap: 12px; }
+.mobile-brand { display: flex; align-items: center; gap: 6px; font-weight: 700; color: #d2517f; }
+.logo-mini { background: linear-gradient(135deg, #ff8bb3, #ff6fa0); color: #fff; border-radius: 10px; padding: 6px; font-size: 12px; }
+
+.drawer { position: fixed; inset: 0; pointer-events: none; z-index: 20; }
+.drawer.open { pointer-events: auto; }
+.drawer-mask { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.35); opacity: 0; transition: opacity 0.2s ease; }
+.drawer.open .drawer-mask { opacity: 1; }
+.drawer-panel { position: absolute; top: 0; left: -260px; width: 240px; height: 100%; background: #fff7fb; border-right: 1px solid rgba(255, 190, 210, 0.6); padding: 16px; transition: left 0.2s ease; display: flex; flex-direction: column; }
+.drawer.open .drawer-panel { left: 0; }
+.drawer-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.drawer .brand { display: flex; gap: 10px; align-items: center; }
+.drawer .brand .icon { background: linear-gradient(135deg, #ff8bb3, #ff6fa0); width: 32px; height: 32px; border-radius: 10px; color: #fff; display: flex; align-items: center; justify-content: center; }
+.drawer .brand h1 { margin: 0; font-size: 16px; color: #ff4c8a; }
+.drawer .brand p { margin: 0; font-size: 12px; color: #b6788d; }
+
 @media (max-width: 1100px) { .detail-layout { grid-template-columns: 1fr; } }
+@media (max-width: 900px) {
+  .sidebar { display: none; }
+  .mobile-topbar { display: flex; }
+  .topbar { padding: 12px 16px; }
+  .topbar .right { display: none; }
+  .detail-layout { padding-inline: 12px; }
+  .hero-img { max-height: 60vh; }
+  .image-actions { font-size: 12px; }
+  .mobile-actions { display: flex; }
+}
+@media (max-width: 640px) {
+  .tag-input { flex-direction: column; align-items: stretch; }
+  .tag-input input { width: 100%; }
+  .color-picker { width: 100%; max-width: 120px; }
+  .panel { padding: 12px; }
+}
 </style>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import axios from 'axios'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
@@ -31,14 +31,18 @@ const links = [
   { label: '文件夹', icon: '📁', path: '/folders' },
   { label: '相册', icon: '📚', path: '/albums' },
   { label: '智能分类', icon: '🧠', path: '/smart' },
-  { label: 'AI工作区', icon: '🤖', path: '/ai' },
+  { label: 'AI 工作台', icon: '🤖', path: '/ai' },
   { label: '任务中心', icon: '🧾', path: '/tasks' },
   { label: '回收站', icon: '🗑️', path: '/recycle' },
   { label: '设置', icon: '⚙️', path: '/settings' },
 ]
 const currentPath = computed(() => router.currentRoute.value.path)
-const go = (path: string) => router.push(path)
+const go = (path: string) => { router.push(path); navOpen.value = false }
 const isActive = (path: string) => currentPath.value === path || currentPath.value.startsWith(path + '/')
+const navOpen = ref(false)
+const toggleNav = () => (navOpen.value = !navOpen.value)
+const closeNav = () => (navOpen.value = false)
+watch(() => router.currentRoute.value.fullPath, () => closeNav())
 
 const keyword = ref('')
 const selectedTags = ref<string[]>([])
@@ -239,6 +243,15 @@ onMounted(() => {
     </aside>
 
     <main>
+      <header class="mobile-topbar">
+        <button class="icon-btn ghost" @click="toggleNav">☰</button>
+        <div class="mobile-brand">
+          <span class="logo-mini">📸</span>
+          <span>搜索</span>
+        </div>
+        <button class="icon-btn ghost" @click="go('/')">🏡</button>
+      </header>
+
       <header class="topbar">
         <div class="left">
           <div class="title">搜索引擎 · 全局检索</div>
@@ -248,6 +261,27 @@ onMounted(() => {
           <span class="welcome">欢迎你，亲爱的 Photory 用户 {{ username }}</span>
         </div>
       </header>
+
+      <div class="drawer" :class="{ open: navOpen }">
+        <div class="drawer-mask" @click="closeNav"></div>
+        <div class="drawer-panel">
+          <div class="drawer-head">
+            <div class="brand">
+              <div class="icon">📸</div>
+              <div class="text">
+                <h1>Photory</h1>
+                <p>随时随地 · 全局搜索</p>
+              </div>
+            </div>
+            <button class="icon-btn ghost" @click="closeNav">✕</button>
+          </div>
+          <nav>
+            <a v-for="item in links" :key="item.path" :class="{ active: isActive(item.path) }" @click="go(item.path)">
+              {{ item.icon }} {{ item.label }}
+            </a>
+          </nav>
+        </div>
+      </div>
 
       <section class="search-card">
         <div class="main-search">
@@ -311,7 +345,7 @@ onMounted(() => {
                 v-model="dateRange"
                 type="daterange"
                 unlink-panels
-                range-separator="到"
+                range-separator="至"
                 start-placeholder="开始日期"
                 end-placeholder="结束日期"
                 value-format="YYYY-MM-DD"
@@ -408,12 +442,12 @@ onMounted(() => {
 
 <style scoped>
 .dashboard { display: flex; min-height: 100vh; background: linear-gradient(135deg, #ffeef5, #ffe5f0); color: #4b4b4b; }
-.sidebar { width: 220px; background: linear-gradient(180deg, #fff7fb, #ffeef5); border-right: 1px solid rgba(255, 190, 210, 0.6); padding: 20px; }
+.sidebar { width: 240px; background: linear-gradient(180deg, #fff7fb, #ffeef5); border-right: 1px solid rgba(255, 190, 210, 0.6); padding: 20px; position: sticky; top: 0; height: 100vh; }
 .logo { display: flex; gap: 10px; margin-bottom: 20px; }
 .logo .icon { background: linear-gradient(135deg, #ff8bb3, #ff6fa0); width: 36px; height: 36px; border-radius: 10px; color: #fff; display: flex; align-items: center; justify-content: center; }
 .logo h1 { font-size: 18px; color: #ff4c8a; margin: 0; }
 .logo p { font-size: 11px; color: #b6788d; margin: 0; }
-nav a { display: block; padding: 8px 12px; border-radius: 12px; font-size: 13px; color: #6b3c4a; margin: 2px 0; cursor: pointer; }
+nav a { display: block; padding: 9px 12px; border-radius: 12px; font-size: 14px; color: #6b3c4a; margin: 4px 0; cursor: pointer; }
 nav a.active, nav a:hover { background: rgba(255, 153, 187, 0.16); color: #ff4c8a; }
 
 main { flex: 1; display: flex; flex-direction: column; min-height: 100vh; }
@@ -425,9 +459,9 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 100vh; }
 
 .search-card { margin: 14px 18px 10px; background: rgba(255, 255, 255, 0.96); border-radius: 18px; padding: 14px 16px; box-shadow: 0 12px 24px rgba(255, 165, 199, 0.32); }
 .main-search { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-.main-search input { flex: 1; min-width: 240px; border-radius: 14px; border: 1px solid rgba(255, 190, 210, 0.9); padding: 10px 12px; font-size: 13px; outline: none; }
+.main-search input { flex: 1; min-width: 220px; border-radius: 14px; border: 1px solid rgba(255, 190, 210, 0.9); padding: 10px 12px; font-size: 13px; outline: none; }
 .main-search input:focus { border-color: #ff8bb3; }
-.tag-select { min-width: 240px; flex: 0 0 280px; }
+.tag-select { min-width: 220px; flex: 0 0 260px; }
 .tag-option { display: inline-flex; align-items: center; gap: 6px; }
 .tag-option .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
 
@@ -499,11 +533,46 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 100vh; }
 :deep(.el-slider__button) { border-color: #ff8bb3; }
 footer { text-align: center; font-size: 12px; color: #b57a90; }
 
-@media (max-width: 1100px) {
+/* 移动端 */
+.mobile-topbar { display: none; align-items: center; justify-content: space-between; padding: 10px 16px 0; gap: 12px; }
+.mobile-brand { display: flex; align-items: center; gap: 6px; font-weight: 700; color: #d2517f; }
+.logo-mini { background: linear-gradient(135deg, #ff8bb3, #ff6fa0); color: #fff; border-radius: 10px; padding: 6px; font-size: 12px; }
+.icon-btn { background: #ffeef5; border: none; border-radius: 50%; width: 32px; height: 32px; cursor: pointer; }
+.icon-btn.ghost { background: rgba(255, 255, 255, 0.65); border: 1px solid rgba(255, 190, 210, 0.7); }
+
+.drawer { position: fixed; inset: 0; pointer-events: none; z-index: 20; }
+.drawer.open { pointer-events: auto; }
+.drawer-mask { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.35); opacity: 0; transition: opacity 0.2s ease; }
+.drawer.open .drawer-mask { opacity: 1; }
+.drawer-panel { position: absolute; top: 0; left: -260px; width: 240px; height: 100%; background: #fff7fb; border-right: 1px solid rgba(255, 190, 210, 0.6); padding: 16px; transition: left 0.2s ease; display: flex; flex-direction: column; }
+.drawer.open .drawer-panel { left: 0; }
+.drawer-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.drawer .brand { display: flex; gap: 10px; align-items: center; }
+.drawer .brand .icon { background: linear-gradient(135deg, #ff8bb3, #ff6fa0); width: 32px; height: 32px; border-radius: 10px; color: #fff; display: flex; align-items: center; justify-content: center; }
+.drawer .brand h1 { margin: 0; font-size: 16px; color: #ff4c8a; }
+.drawer .brand p { margin: 0; font-size: 12px; color: #b6788d; }
+
+@media (max-width: 1200px) {
   .sidebar { display: none; }
   .time-row { grid-template-columns: 1fr; }
   .filter-grid { grid-template-columns: 1fr; }
   .gallery { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
   .gallery.masonry { column-count: 2; }
+}
+@media (max-width: 900px) {
+  .mobile-topbar { display: flex; }
+  .topbar { padding: 12px 16px; }
+  .search-card { margin-inline: 12px; }
+  .results { padding-inline: 12px; }
+  .filter-grid { grid-template-columns: 1fr; }
+  .meta-bar { flex-direction: column; align-items: flex-start; }
+}
+@media (max-width: 640px) {
+  .main-search { flex-direction: column; align-items: stretch; }
+  .main-search input, .tag-select, .primary-btn, .ghost-btn { width: 100%; }
+  .controls { width: 100%; }
+  .sort-select { width: 100%; }
+  .gallery { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
+  .gallery.masonry { column-count: 1; }
 }
 </style>

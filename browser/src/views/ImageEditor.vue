@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -55,6 +55,11 @@ const exportTags = ref<{ name: string; color: string }[]>([])
 const newExportTag = ref('')
 const newExportColor = ref(palette[0])
 const versionHistory = ref<{ id?: number; name: string; created_at: string; note: string; type: 'origin' | 'edit' }[]>([])
+
+const navOpen = ref(false)
+const toggleNav = () => (navOpen.value = !navOpen.value)
+const closeNav = () => (navOpen.value = false)
+watch(() => router.currentRoute.value.fullPath, () => closeNav())
 
 const fallbackImage = new URL('../assets/pink_sky.jpg', import.meta.url).href
 const tokenParam = computed(() => (authStore.token ? `?jwt=${authStore.token}` : ''))
@@ -150,12 +155,37 @@ async function fetchDetail() {
     exportFolder.value = res.data.folder || '默认图库'
     exportTags.value = (res.data.tag_objects || []).map((t: any) => ({ name: t.name, color: t.color || palette[0] }))
     versionHistory.value = (res.data.version_history || []).map((v: any) => ({ ...v, type: 'edit' as const }))
+    resetHistories()
   } catch (err) {
     ElMessage.error('获取图片详情失败')
     router.push('/')
   } finally {
     loading.value = false
   }
+}
+
+function resetHistories() {
+  editorState.value = {
+    cropPreset: 'free',
+    customCrop: { width: 1920, height: 1080 },
+    rotation: 0,
+    zoom: 1,
+    adjustments: { ...baseAdjustments },
+    cropBox: { x: 0, y: 0, w: 1, h: 1 },
+  }
+  cropHistory.value = [{ ...editorState.value }]
+  cropCursor.value = 0
+  rotateHistory.value = [{ rotation: 0, zoom: 1 }]
+  rotateCursor.value = 0
+  adjustHistory.value = [{ ...baseAdjustments }]
+  adjustCursor.value = 0
+  compareMode.value = 'side'
+  showOriginal.value = false
+}
+
+function restoreOriginal() {
+  resetHistories()
+  ElMessage.success('已恢复到初始编辑状态')
 }
 
 function pushCropHistory() {
@@ -280,13 +310,8 @@ function setAdjustment(key: string, value: number, commit = false) {
   if (commit) pushAdjustHistory()
 }
 
-function goDetail() {
-  router.push(`/images/${route.params.id}`)
-}
-function logout() {
-  authStore.logout()
-  router.push('/auth/login')
-}
+function goDetail() { router.push(`/images/${route.params.id}`) }
+function logout() { authStore.logout(); router.push('/auth/login') }
 
 function confirmExit() {
   return ElMessageBox.confirm(
@@ -309,9 +334,7 @@ async function handleExit() {
   }
 }
 
-function download() {
-  if (originalUrl.value) window.open(originalUrl.value, '_blank')
-}
+function download() { if (originalUrl.value) window.open(originalUrl.value, '_blank') }
 
 function addExportTag() {
   const name = newExportTag.value.trim()
@@ -440,7 +463,7 @@ onMounted(fetchDetail)
           { label: '文件夹', icon: '📁', path: '/folders' },
           { label: '相册', icon: '📚', path: '/albums' },
           { label: '智能分类', icon: '🧠', path: '/smart' },
-          { label: 'AI工作区', icon: '🤖', path: '/ai' },
+          { label: 'AI 工作台', icon: '🤖', path: '/ai' },
           { label: '任务中心', icon: '🧾', path: '/tasks' },
           { label: '回收站', icon: '🗑️', path: '/recycle' },
           { label: '设置', icon: '⚙️', path: '/settings' },
@@ -451,10 +474,19 @@ onMounted(fetchDetail)
     </aside>
 
     <main>
+      <header class="mobile-topbar">
+        <button class="icon-btn ghost" @click="toggleNav">☰</button>
+        <div class="mobile-brand">
+          <span class="logo-mini">✂️</span>
+          <span>在线编辑</span>
+        </div>
+        <button class="icon-btn ghost" @click="goDetail">↩️</button>
+      </header>
+
       <header class="topbar">
         <div class="left">
           <div class="title">在线编辑器</div>
-          <div class="subtitle">支持裁剪 / 旋转 / 色彩多维度调节，灵活对比 / 导出~</div>
+          <div class="subtitle">支持裁剪 / 旋转 / 色彩调节，灵活对比与导出</div>
         </div>
         <div class="right">
           <button class="pill-btn ghost" @click="download">下载</button>
@@ -462,6 +494,33 @@ onMounted(fetchDetail)
           <button class="pill-btn danger" @click="handleExit">退出编辑</button>
         </div>
       </header>
+
+      <div class="drawer" :class="{ open: navOpen }">
+        <div class="drawer-mask" @click="closeNav"></div>
+        <div class="drawer-panel">
+          <div class="drawer-head">
+            <div class="brand">
+              <div class="icon">📸</div>
+              <div class="text">
+                <h1>Photory</h1>
+                <p>在线编辑</p>
+              </div>
+            </div>
+            <button class="icon-btn ghost" @click="closeNav">✕</button>
+          </div>
+          <nav>
+            <a v-for="item in [
+              { label: '首页', icon: '🏠', path: '/' },
+              { label: '搜索引擎', icon: '🔎', path: '/search' },
+              { label: '上传中心', icon: '☁️', path: '/upload' },
+              { label: '标签', icon: '🏷️', path: '/tags' },
+              { label: '回收站', icon: '🗑️', path: '/recycle' },
+            ]" :key="item.path" :class="{ active: $route.path === item.path || $route.path.startsWith(item.path + '/') }" @click="router.push(item.path)">
+              {{ item.icon }} {{ item.label }}
+            </a>
+          </nav>
+        </div>
+      </div>
 
       <section class="editor-layout">
         <div class="canvas-panel">
@@ -509,6 +568,12 @@ onMounted(fetchDetail)
               <img :src="previewSrc" :alt="detail.name" :style="editedStyle" />
             </div>
           </div>
+
+          <div class="mobile-actions">
+            <button class="pill-btn ghost" @click="download">下载</button>
+            <button class="pill-btn ghost" @click="restoreOriginal">恢复原图</button>
+            <button class="pill-btn danger" @click="handleExit">退出编辑</button>
+          </div>
         </div>
 
         <div class="controls">
@@ -540,8 +605,8 @@ onMounted(fetchDetail)
           <div class="control-card">
             <div class="section-title">旋转</div>
             <div class="btn-row">
-              <button class="chip-btn" @click="applyRotation(-90)">↺90°</button>
-              <button class="chip-btn" @click="applyRotation(90)">↻90°</button>
+              <button class="chip-btn" @click="applyRotation(-90)">-90°</button>
+              <button class="chip-btn" @click="applyRotation(90)">+90°</button>
               <button class="chip-btn ghost" @click="updateRotation(0, true)">归零</button>
             </div>
             <div class="slider-row">
@@ -651,12 +716,12 @@ onMounted(fetchDetail)
 
 <style scoped>
 .dashboard { display: flex; min-height: 100vh; background: linear-gradient(135deg, #ffeef5, #ffe5f0); color: #4b4b4b; }
-.sidebar { width: 220px; background: linear-gradient(180deg, #fff7fb, #ffeef5); border-right: 1px solid rgba(255, 190, 210, 0.6); padding: 20px; }
+.sidebar { width: 240px; background: linear-gradient(180deg, #fff7fb, #ffeef5); border-right: 1px solid rgba(255, 190, 210, 0.6); padding: 20px; position: sticky; top: 0; height: 100vh; }
 .logo { display: flex; gap: 10px; margin-bottom: 20px; }
 .logo .icon { background: linear-gradient(135deg, #ff8bb3, #ff6fa0); width: 36px; height: 36px; border-radius: 10px; color: #fff; display: flex; align-items: center; justify-content: center; }
 .logo h1 { font-size: 18px; color: #ff4c8a; margin: 0; }
 .logo p { font-size: 11px; color: #b6788d; margin: 0; }
-nav a { display: block; padding: 8px 12px; border-radius: 12px; font-size: 13px; color: #6b3c4a; margin: 2px 0; cursor: pointer; }
+nav a { display: block; padding: 9px 12px; border-radius: 12px; font-size: 14px; color: #6b3c4a; margin: 4px 0; cursor: pointer; }
 nav a.active, nav a:hover { background: rgba(255, 153, 187, 0.16); color: #ff4c8a; }
 
 main { flex: 1; display: flex; flex-direction: column; }
@@ -665,6 +730,9 @@ main { flex: 1; display: flex; flex-direction: column; }
 .title { font-weight: 700; color: #ff4c8a; font-size: 18px; }
 .subtitle { font-size: 12px; color: #a36e84; }
 .topbar .right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+
+.icon-btn { background: #ffeef5; border: none; border-radius: 50%; width: 32px; height: 32px; cursor: pointer; }
+.icon-btn.ghost { background: rgba(255, 255, 255, 0.65); border: 1px solid rgba(255, 190, 210, 0.7); }
 
 .pill-btn { border: none; border-radius: 999px; padding: 8px 14px; background: linear-gradient(135deg, #ff8bb3, #ff6fa0); color: #fff; font-size: 13px; cursor: pointer; box-shadow: 0 4px 10px rgba(255, 120, 165, 0.4); }
 .pill-btn.ghost { background: #ffeef5; color: #b05f7a; box-shadow: none; border: 1px solid rgba(255, 180, 205, 0.7); }
@@ -695,6 +763,7 @@ main { flex: 1; display: flex; flex-direction: column; }
 .compare-card { background: #fff8fb; border-radius: 14px; padding: 10px; box-shadow: 0 10px 18px rgba(255, 152, 201, 0.25); }
 .compare-card img { width: 100%; border-radius: 10px; object-fit: cover; background: #f9edf3; }
 .card-title { font-size: 13px; color: #b05f7a; margin-bottom: 6px; }
+.mobile-actions { display: none; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
 
 .controls { display: flex; flex-direction: column; gap: 12px; }
 .control-card { background: rgba(255, 255, 255, 0.96); border-radius: 20px; padding: 14px; box-shadow: 0 12px 26px rgba(255, 165, 199, 0.22); }
@@ -715,7 +784,7 @@ main { flex: 1; display: flex; flex-direction: column; }
 
 .module-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
 
-.export-options { display: flex; gap: 12px; margin: 8px 0; color: #a35d76; font-size: 13px; }
+.export-options { display: flex; gap: 12px; margin: 8px 0; color: #a35d76; font-size: 13px; flex-wrap: wrap; }
 .radio { display: flex; align-items: center; gap: 6px; }
 .form-grid { display: grid; grid-template-columns: 100px 1fr; gap: 6px 10px; font-size: 13px; color: #a35d76; }
 .text-input { width: 100%; border-radius: 12px; border: 1px solid rgba(255, 180, 205, 0.9); padding: 8px 10px; font-size: 13px; color: #4b4b4b; outline: none; }
@@ -736,6 +805,41 @@ main { flex: 1; display: flex; flex-direction: column; }
 :deep(.pink-confirm .el-button--primary) { background: linear-gradient(135deg, #ff8bb3, #ff6fa0); border: none; }
 :deep(.pink-confirm .el-button--default) { border-color: #ffb6cf; color: #b05f7a; }
 
+/* 移动端 */
+.mobile-topbar { display: none; align-items: center; justify-content: space-between; padding: 10px 16px 0; gap: 12px; }
+.mobile-brand { display: flex; align-items: center; gap: 6px; font-weight: 700; color: #d2517f; }
+.logo-mini { background: linear-gradient(135deg, #ff8bb3, #ff6fa0); color: #fff; border-radius: 10px; padding: 6px; font-size: 12px; }
+
+.drawer { position: fixed; inset: 0; pointer-events: none; z-index: 20; }
+.drawer.open { pointer-events: auto; }
+.drawer-mask { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.35); opacity: 0; transition: opacity 0.2s ease; }
+.drawer.open .drawer-mask { opacity: 1; }
+.drawer-panel { position: absolute; top: 0; left: -260px; width: 240px; height: 100%; background: #fff7fb; border-right: 1px solid rgba(255, 190, 210, 0.6); padding: 16px; transition: left 0.2s ease; display: flex; flex-direction: column; }
+.drawer.open .drawer-panel { left: 0; }
+.drawer-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.drawer .brand { display: flex; gap: 10px; align-items: center; }
+.drawer .brand .icon { background: linear-gradient(135deg, #ff8bb3, #ff6fa0); width: 32px; height: 32px; border-radius: 10px; color: #fff; display: flex; align-items: center; justify-content: center; }
+.drawer .brand h1 { margin: 0; font-size: 16px; color: #ff4c8a; }
+.drawer .brand p { margin: 0; font-size: 12px; color: #b6788d; }
+
 @media (max-width: 1180px) { .editor-layout { grid-template-columns: 1fr; } .topbar { align-items: flex-start; flex-direction: column; } .canvas-panel { order: -1; } }
-@media (max-width: 760px) { .sidebar { display: none; } .topbar .right { justify-content: flex-start; } .compare-panel { grid-template-columns: 1fr; } }
+@media (max-width: 900px) {
+  .sidebar { display: none; }
+  .mobile-topbar { display: flex; }
+  .topbar { padding: 12px 16px; }
+  .topbar .right { display: none; }
+  .editor-layout { padding-inline: 12px; }
+  .image-stage { height: 440px; }
+  .compare-panel { grid-template-columns: 1fr; }
+  .mobile-actions { display: flex; }
+}
+@media (max-width: 640px) {
+  .preset-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .custom-size { grid-template-columns: repeat(2, 1fr); row-gap: 8px; }
+  .form-grid { grid-template-columns: 1fr; }
+  .tag-add { grid-template-columns: 1fr; }
+  .slider-row { grid-template-columns: 60px 40px 1fr; }
+  .tag-line, .view-buttons { width: 100%; }
+  .image-stage { height: 360px; }
+}
 </style>

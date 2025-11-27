@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import axios from 'axios'
@@ -53,15 +53,19 @@ const links = [
   { label: '文件夹', icon: '📁', path: '/folders' },
   { label: '相册', icon: '📚', path: '/albums' },
   { label: '智能分类', icon: '🧠', path: '/smart' },
-  { label: 'AI工作区', icon: '🤖', path: '/ai' },
+  { label: 'AI 工作台', icon: '🤖', path: '/ai' },
   { label: '任务中心', icon: '🧾', path: '/tasks' },
   { label: '回收站', icon: '🗑️', path: '/recycle' },
   { label: '设置', icon: '⚙️', path: '/settings' },
 ]
 
 const currentPath = computed(() => router.currentRoute.value.path)
-function go(path: string) { router.push(path) }
+function go(path: string) { router.push(path); navOpen.value = false }
 function isActive(path: string) { return currentPath.value === path || currentPath.value.startsWith(path + '/') }
+const navOpen = ref(false)
+const toggleNav = () => (navOpen.value = !navOpen.value)
+const closeNav = () => (navOpen.value = false)
+watch(() => router.currentRoute.value.fullPath, () => closeNav())
 
 function normalizeColor(raw?: string | null, idx = 0, name = '') {
   if (!raw) {
@@ -276,15 +280,45 @@ onMounted(() => {
     </aside>
 
     <main>
+      <header class="mobile-topbar">
+        <button class="icon-btn ghost" @click="toggleNav">☰</button>
+        <div class="mobile-brand">
+          <span class="logo-mini">📸</span>
+          <span>标签</span>
+        </div>
+        <button class="icon-btn ghost" @click="go('/')">🏡</button>
+      </header>
+
       <header class="topbar">
         <div class="left">
           <div class="title">标签管理中心</div>
-          <div class="subtitle">支持自定义分类标签，可编辑/删除/合并，包含可视化统计，与EXIF/AI标签分开管理</div>
+          <div class="subtitle">支持自定义分类标签，可编辑/删除/合并，包含可视化统计，与 EXIF/AI 标签分开管理</div>
         </div>
         <div class="right">
           <span class="welcome">欢迎你，亲爱的 Photory 用户 {{ username }}</span>
         </div>
       </header>
+
+      <div class="drawer" :class="{ open: navOpen }">
+        <div class="drawer-mask" @click="closeNav"></div>
+        <div class="drawer-panel">
+          <div class="drawer-head">
+            <div class="brand">
+              <div class="icon">📸</div>
+              <div class="text">
+                <h1>Photory</h1>
+                <p>随时随地 · 标签管理</p>
+              </div>
+            </div>
+            <button class="icon-btn ghost" @click="closeNav">✕</button>
+          </div>
+          <nav>
+            <a v-for="item in links" :key="item.path" :class="{ active: isActive(item.path) }" @click="go(item.path)">
+              {{ item.icon }} {{ item.label }}
+            </a>
+          </nav>
+        </div>
+      </div>
 
       <section class="stats-panel">
         <div class="stat-card">
@@ -432,7 +466,7 @@ onMounted(() => {
       </div>
       <template #footer>
         <button class="ghost-btn" @click="dialogVisible = false">取消</button>
-        <button class="primary-btn" :disabled="saving" @click="saveTag">{{ saving ? '保存中...' : '保存' }}</button>
+        <button class="primary-btn" :disabled="saving" @click="saveTag">{{ saving ? '保存中..' : '保存' }}</button>
       </template>
     </el-dialog>
 
@@ -461,12 +495,12 @@ onMounted(() => {
 
 <style scoped>
 .dashboard { display: flex; min-height: 100vh; background: linear-gradient(135deg, #ffeef5, #ffe5f0); color: #4b4b4b; }
-.sidebar { width: 220px; background: linear-gradient(180deg, #fff7fb, #ffeef5); border-right: 1px solid rgba(255, 190, 210, 0.6); padding: 20px; }
+.sidebar { width: 240px; background: linear-gradient(180deg, #fff7fb, #ffeef5); border-right: 1px solid rgba(255, 190, 210, 0.6); padding: 20px; position: sticky; top: 0; height: 100vh; }
 .logo { display: flex; gap: 10px; margin-bottom: 20px; }
 .logo .icon { background: linear-gradient(135deg, #ff8bb3, #ff6fa0); width: 36px; height: 36px; border-radius: 10px; color: #fff; display: flex; align-items: center; justify-content: center; }
 .logo h1 { font-size: 18px; color: #ff4c8a; margin: 0; }
 .logo p { font-size: 11px; color: #b6788d; margin: 0; }
-nav a { display: block; padding: 8px 12px; border-radius: 12px; font-size: 13px; color: #6b3c4a; margin: 2px 0; cursor: pointer; }
+nav a { display: block; padding: 9px 12px; border-radius: 12px; font-size: 14px; color: #6b3c4a; margin: 4px 0; cursor: pointer; }
 nav a.active, nav a:hover { background: rgba(255, 153, 187, 0.16); color: #ff4c8a; }
 main { flex: 1; display: flex; flex-direction: column; }
 .topbar { display: flex; justify-content: space-between; align-items: center; padding: 14px 24px; border-bottom: 1px solid rgba(255, 190, 210, 0.5); background: rgba(255, 255, 255, 0.92); }
@@ -523,6 +557,40 @@ footer { text-align: center; font-size: 12px; color: #b57a90; padding: 10px 0 16
 .primary-btn { background: linear-gradient(135deg, #ff8bb3, #ff6fa0); color: #fff; box-shadow: 0 4px 10px rgba(255, 120, 165, 0.4); }
 .ghost-btn { background: #ffeef5; color: #b05f7a; border: 1px solid rgba(255, 180, 205, 0.7); }
 .ghost-btn.danger { color: #d95959; border-color: #f4a6a6; }
+
+/* 移动端 */
+.mobile-topbar { display: none; align-items: center; justify-content: space-between; padding: 10px 16px 0; gap: 12px; }
+.mobile-brand { display: flex; align-items: center; gap: 6px; font-weight: 700; color: #d2517f; }
+.logo-mini { background: linear-gradient(135deg, #ff8bb3, #ff6fa0); color: #fff; border-radius: 10px; padding: 6px; font-size: 12px; }
+.icon-btn { background: #ffeef5; border: none; border-radius: 50%; width: 32px; height: 32px; cursor: pointer; }
+.icon-btn.ghost { background: rgba(255, 255, 255, 0.65); border: 1px solid rgba(255, 190, 210, 0.7); }
+
+.drawer { position: fixed; inset: 0; pointer-events: none; z-index: 20; }
+.drawer.open { pointer-events: auto; }
+.drawer-mask { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.35); opacity: 0; transition: opacity 0.2s ease; }
+.drawer.open .drawer-mask { opacity: 1; }
+.drawer-panel { position: absolute; top: 0; left: -260px; width: 240px; height: 100%; background: #fff7fb; border-right: 1px solid rgba(255, 190, 210, 0.6); padding: 16px; transition: left 0.2s ease; display: flex; flex-direction: column; }
+.drawer.open .drawer-panel { left: 0; }
+.drawer-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.drawer .brand { display: flex; gap: 10px; align-items: center; }
+.drawer .brand .icon { background: linear-gradient(135deg, #ff8bb3, #ff6fa0); width: 32px; height: 32px; border-radius: 10px; color: #fff; display: flex; align-items: center; justify-content: center; }
+.drawer .brand h1 { margin: 0; font-size: 16px; color: #ff4c8a; }
+.drawer .brand p { margin: 0; font-size: 12px; color: #b6788d; }
+
 @media (max-width: 1200px) { .visual-row { grid-template-columns: 1fr; } .row { grid-template-columns: 50px 1fr 1fr 1fr 1fr 1fr; } }
-@media (max-width: 900px) { .sidebar { display: none; } .row { grid-template-columns: 40px 1fr 1fr 1fr; grid-auto-rows: auto; } .chart-head { flex-direction: column; align-items: flex-start; } }
+@media (max-width: 900px) {
+  .sidebar { display: none; }
+  .mobile-topbar { display: flex; }
+  .topbar { padding: 12px 16px; }
+  .row { grid-template-columns: 40px 1fr 1fr 1fr; grid-auto-rows: auto; }
+  .chart-head { flex-direction: column; align-items: flex-start; }
+  .stats-panel { padding-inline: 12px; }
+  .table-card { margin-inline: 12px; }
+}
+@media (max-width: 640px) {
+  .actions { width: 100%; gap: 8px; display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
+  .row { grid-template-columns: 32px 1fr; grid-row-gap: 6px; }
+  .row span:nth-child(n+3) { font-size: 12px; color: #8c546e; }
+  .ops { display: flex; gap: 8px; }
+}
 </style>

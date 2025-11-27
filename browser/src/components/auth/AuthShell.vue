@@ -1,6 +1,5 @@
 <template>
   <div class="auth-page">
-    
     <header class="auth-header">
       <div class="brand">
         <div class="brand-icon">
@@ -13,9 +12,7 @@
       </div>
     </header>
 
-    
     <main class="auth-main">
-      <!-- 左侧粉色大海卡片 -->
       <section class="auth-hero-card">
         <div class="hero-image-wrapper">
           <img :src="heroImage" alt="Photory hero" class="hero-image" />
@@ -28,7 +25,6 @@
         </div>
       </section>
 
-      <!-- 右侧表单卡片 -->
       <section class="auth-form-card">
         <div class="form-card-inner">
           <h1 class="form-title">
@@ -45,7 +41,6 @@
       </section>
     </main>
 
-    <!-- 底部 footer -->
     <footer class="auth-footer">
       2025 Designed by hyk 用心记录每一帧~
     </footer>
@@ -62,11 +57,9 @@ import heroImage from '@/assets/pink_sky.jpg'
   display: flex;
   flex-direction: column;
   background: linear-gradient(180deg, #ffe7f1 0%, #ffd6e8 50%, #ffd1e3 100%);
-  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui,
-    -apple-system, 'Segoe UI', Roboto, 'PingFang SC', 'Hiragino Sans GB',
-    'Microsoft YaHei', sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, 'Segoe UI', Roboto, 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
 }
-
 
 .auth-header {
   padding: 24px 80px 8px;
@@ -105,7 +98,6 @@ import heroImage from '@/assets/pink_sky.jpg'
   color: #c27d9e;
 }
 
-
 .auth-main {
   flex: 1;
   display: grid;
@@ -114,7 +106,6 @@ import heroImage from '@/assets/pink_sky.jpg'
   padding: 12px 80px 40px;
   align-items: center;
 }
-
 
 .auth-hero-card {
   display: flex;
@@ -138,7 +129,6 @@ import heroImage from '@/assets/pink_sky.jpg'
   object-fit: cover;
 }
 
-
 .hero-tag {
   position: absolute;
   padding: 8px 14px;
@@ -159,7 +149,6 @@ import heroImage from '@/assets/pink_sky.jpg'
   left: 8%;
   bottom: 8%;
 }
-
 
 .auth-form-card {
   display: flex;
@@ -194,14 +183,12 @@ import heroImage from '@/assets/pink_sky.jpg'
   color: #b37d9b;
 }
 
-
 .auth-footer {
   text-align: center;
   padding: 8px 0 18px;
   font-size: 13px;
   color: #b67f9e;
 }
-
 
 @media (max-width: 1100px) {
   .auth-main {
@@ -223,6 +210,31 @@ import heroImage from '@/assets/pink_sky.jpg'
 
   .form-card-inner {
     margin-inline: auto;
+  }
+}
+@media (max-width: 680px) {
+  .auth-header {
+    padding: 16px;
+  }
+  .auth-main {
+    padding: 12px 16px 28px;
+    row-gap: 16px;
+  }
+  .hero-image-wrapper {
+    aspect-ratio: 4 / 3;
+    max-width: 100%;
+  }
+  .form-card-inner {
+    padding: 28px 18px 22px;
+  }
+  .form-title {
+    font-size: 22px;
+  }
+  .form-subtitle {
+    font-size: 13px;
+  }
+  .brand-slogan {
+    font-size: 12px;
   }
 }
 </style>

@@ -26,15 +26,19 @@ const links = [
   { label: '文件夹', icon: '📁', path: '/folders' },
   { label: '相册', icon: '📚', path: '/albums' },
   { label: '智能分类', icon: '🧠', path: '/smart' },
-  { label: 'AI工作区', icon: '🤖', path: '/ai' },
+  { label: 'AI 工作台', icon: '🤖', path: '/ai' },
   { label: '任务中心', icon: '🧾', path: '/tasks' },
   { label: '回收站', icon: '🗑️', path: '/recycle' },
   { label: '设置', icon: '⚙️', path: '/settings' },
 ]
 
 const currentPath = computed(() => router.currentRoute.value.path)
-function go(path: string) { router.push(path) }
+function go(path: string) { router.push(path); navOpen.value = false }
 function isActive(path: string) { return currentPath.value === path || currentPath.value.startsWith(path + '/') }
+const navOpen = ref(false)
+const toggleNav = () => (navOpen.value = !navOpen.value)
+const closeNav = () => (navOpen.value = false)
+watch(() => router.currentRoute.value.fullPath, () => closeNav())
 
 const items = ref<RecycleItem[]>([])
 const loading = ref(false)
@@ -152,6 +156,15 @@ onMounted(() => { if (authStore.token) fetchRecycle() })
     </aside>
 
     <main>
+      <header class="mobile-topbar">
+        <button class="icon-btn ghost" @click="toggleNav">☰</button>
+        <div class="mobile-brand">
+          <span class="logo-mini">🗑️</span>
+          <span>回收站</span>
+        </div>
+        <button class="icon-btn ghost" @click="go('/')">🏡</button>
+      </header>
+
       <header class="topbar">
         <div class="left">
           <div class="title">回收站</div>
@@ -162,9 +175,30 @@ onMounted(() => { if (authStore.token) fetchRecycle() })
         </div>
       </header>
 
+      <div class="drawer" :class="{ open: navOpen }">
+        <div class="drawer-mask" @click="closeNav"></div>
+        <div class="drawer-panel">
+          <div class="drawer-head">
+            <div class="brand">
+              <div class="icon">📸</div>
+              <div class="text">
+                <h1>回收站</h1>
+                <p>7 天后自动清空</p>
+              </div>
+            </div>
+            <button class="icon-btn ghost" @click="closeNav">✕</button>
+          </div>
+          <nav>
+            <a v-for="item in links" :key="item.path" :class="{ active: isActive(item.path) }" @click="go(item.path)">
+              {{ item.icon }} {{ item.label }}
+            </a>
+          </nav>
+        </div>
+      </div>
+
       <section class="info-row">
         <div class="notice">
-          🗑️ 回收站中的项目将在 7 天后永久删除 · 请及时处理重要的图片
+          🗑️ 回收站中的项目将于 7 天后永久删除 · 请及时处理重要的图片
         </div>
         <div class="stat-card">
           <div class="stat-num">{{ total }}</div>
@@ -230,9 +264,8 @@ onMounted(() => { if (authStore.token) fetchRecycle() })
 </template>
 
 <style scoped>
-
 .dashboard { display: flex; min-height: 100vh; background: linear-gradient(135deg, #ffeef5, #ffe5f0); color: #4b4b4b; }
-.sidebar { width: 220px; background: linear-gradient(180deg, #fff7fb, #ffeef5); border-right: 1px solid rgba(255, 190, 210, 0.6); padding: 20px; }
+.sidebar { width: 220px; background: linear-gradient(180deg, #fff7fb, #ffeef5); border-right: 1px solid rgba(255, 190, 210, 0.6); padding: 20px; position: sticky; top: 0; height: 100vh; }
 .logo { display: flex; gap: 10px; margin-bottom: 20px; }
 .logo .icon { background: linear-gradient(135deg, #ff8bb3, #ff6fa0); width: 36px; height: 36px; border-radius: 10px; color: #fff; display: flex; align-items: center; justify-content: center; }
 .logo h1 { font-size: 18px; color: #ff4c8a; margin: 0; }
@@ -296,6 +329,26 @@ footer { text-align: center; font-size: 12px; color: #b57a90; }
 :deep(.pink-confirm .el-button--primary) { background: linear-gradient(135deg, #ff8bb3, #ff6fa0); border: none; }
 :deep(.pink-confirm .el-button--default) { border-color: #ffb6cf; color: #b05f7a; }
 
+/* 移动端 */
+.mobile-topbar { display: none; align-items: center; justify-content: space-between; padding: 10px 16px 0; gap: 12px; }
+.mobile-brand { display: flex; align-items: center; gap: 6px; font-weight: 700; color: #d2517f; }
+.logo-mini { background: linear-gradient(135deg, #ff8bb3, #ff6fa0); color: #fff; border-radius: 10px; padding: 6px; font-size: 12px; }
+.icon-btn { background: #ffeef5; border: none; border-radius: 50%; width: 32px; height: 32px; cursor: pointer; }
+.icon-btn.ghost { background: rgba(255, 255, 255, 0.65); border: 1px solid rgba(255, 190, 210, 0.7); }
+
+.drawer { position: fixed; inset: 0; pointer-events: none; z-index: 20; }
+.drawer.open { pointer-events: auto; }
+.drawer-mask { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.35); opacity: 0; transition: opacity 0.2s ease; }
+.drawer.open .drawer-mask { opacity: 1; }
+.drawer-panel { position: absolute; top: 0; left: -260px; width: 240px; height: 100%; background: #fff7fb; border-right: 1px solid rgba(255, 190, 210, 0.6); padding: 16px; transition: left 0.2s ease; display: flex; flex-direction: column; }
+.drawer.open .drawer-panel { left: 0; }
+.drawer-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.drawer .brand { display: flex; gap: 10px; align-items: center; }
+.drawer .brand .icon { background: linear-gradient(135deg, #ff8bb3, #ff6fa0); width: 32px; height: 32px; border-radius: 10px; color: #fff; display: flex; align-items: center; justify-content: center; }
+.drawer .brand h1 { margin: 0; font-size: 16px; color: #ff4c8a; }
+.drawer .brand p { margin: 0; font-size: 12px; color: #b6788d; }
+
 @media (max-width: 1200px) { .gallery { grid-template-columns: repeat(3, 1fr); } }
-@media (max-width: 900px) { .sidebar { display: none; } .gallery { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 900px) { .sidebar { display: none; } .mobile-topbar { display: flex; } .gallery { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 640px) { .gallery { grid-template-columns: repeat(2, minmax(0, 1fr)); } .gallery.masonry { column-count: 1; } .topbar .right { display: none; } }
 </style>

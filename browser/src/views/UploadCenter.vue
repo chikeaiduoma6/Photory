@@ -26,16 +26,18 @@ const username = computed(() => authStore.user?.username || '未登录')
 
 const links = [
   { label: '首页', icon: '🏠', path: '/' },
+  { label: '搜索引擎', icon: '🔎', path: '/search' },
   { label: '上传中心', icon: '☁️', path: '/upload' },
   { label: '标签', icon: '🏷️', path: '/tags' },
   { label: '文件夹', icon: '📁', path: '/folders' },
   { label: '相册', icon: '📚', path: '/albums' },
   { label: '智能分类', icon: '🧠', path: '/smart' },
-  { label: 'AI工作台', icon: '🤖', path: '/ai' },
+  { label: 'AI工作区', icon: '🤖', path: '/ai' },
   { label: '任务中心', icon: '🧾', path: '/tasks' },
   { label: '回收站', icon: '🗑️', path: '/recycle' },
   { label: '设置', icon: '⚙️', path: '/settings' },
 ]
+
 const currentPath = computed(() => router.currentRoute.value.path)
 function go(path: string) { router.push(path) }
 function isActive(path: string) { return currentPath.value === path || currentPath.value.startsWith(path + '/') }

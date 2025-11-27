@@ -5,14 +5,15 @@ from .config import Config
 from .extensions import bcrypt, db, jwt
 from .auth_routes import auth_bp
 from .images_routes import images_bp, _normalize_rel_path
+from .tags_routes import tags_bp
 from .models import User, Image
 
-# 允许 PIL 读取 HEIC/HEIF
 try:
     from pillow_heif import register_heif_opener
     register_heif_opener()
 except Exception:
     pass
+
 
 def create_app(config_class: type[Config] = Config) -> Flask:
     app = Flask(__name__)
@@ -34,6 +35,7 @@ def create_app(config_class: type[Config] = Config) -> Flask:
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(images_bp)
+    app.register_blueprint(tags_bp)
 
     with app.app_context():
         db.create_all()
@@ -59,7 +61,6 @@ def _ensure_default_admin():
 
 
 def _fix_existing_paths():
-    """启动时把数据库里残留的反斜杠路径改成标准斜杠。"""
     updated = 0
     for img in Image.query.all():
         new_filename = _normalize_rel_path(img.filename)

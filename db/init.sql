@@ -68,9 +68,23 @@ CREATE TABLE images (
   visibility    VARCHAR(16)  NOT NULL DEFAULT 'private',
   folder        VARCHAR(128) NULL DEFAULT '默认图库',
   created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   deleted_at    DATETIME NULL,
   CONSTRAINT fk_images_user   FOREIGN KEY (user_id)   REFERENCES users(id) ON DELETE CASCADE,
   CONSTRAINT fk_images_folder FOREIGN KEY (folder_id) REFERENCES folders(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 图片版本
+DROP TABLE IF EXISTS image_versions;
+CREATE TABLE image_versions (
+  id         INT AUTO_INCREMENT PRIMARY KEY,
+  image_id   INT NOT NULL,
+  name       VARCHAR(255) NOT NULL,
+  note       VARCHAR(255) NULL,
+  filename   VARCHAR(255) NOT NULL,
+  thumb_path VARCHAR(255) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_image_versions_image FOREIGN KEY (image_id) REFERENCES images(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- 图片-标签关联

@@ -38,6 +38,7 @@ const galleryClass = computed(() => ['gallery', hasImages.value ? viewMode.value
 
 const links = [
   { label: '首页', icon: '🏠', path: '/' },
+  { label: '搜索引擎', icon: '🔎', path: '/search' },
   { label: '上传中心', icon: '☁️', path: '/upload' },
   { label: '标签', icon: '🏷️', path: '/tags' },
   { label: '文件夹', icon: '📁', path: '/folders' },
@@ -48,6 +49,7 @@ const links = [
   { label: '回收站', icon: '🗑️', path: '/recycle' },
   { label: '设置', icon: '⚙️', path: '/settings' },
 ]
+
 const currentPath = computed(() => router.currentRoute.value.path)
 function go(path: string) {
   router.push(path)

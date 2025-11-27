@@ -4,15 +4,19 @@ import UploadCenter from '../views/UploadCenter.vue'
 import ImageDetail from '../views/ImageDetail.vue'
 import ImageEditor from '../views/ImageEditor.vue'
 import TagManagement from '../views/TagManagement.vue'
+import TagImages from '../views/TagImages.vue'
 import RecycleBin from '../views/RecycleBin.vue'
 import Placeholder from '../views/Placeholder.vue'
 import Login from '../views/auth/Login.vue'
 import Register from '../views/auth/Register.vue'
+import SearchEngine from '../views/SearchEngine.vue'
 
 const routes = [
   { path: '/', name: 'Dashboard', component: Dashboard },
+  { path: '/search', name: 'SearchEngine', component: SearchEngine },
   { path: '/upload', name: 'UploadCenter', component: UploadCenter },
   { path: '/tags', name: 'TagManagement', component: TagManagement },
+  { path: '/tags/:id/images', name: 'TagImages', component: TagImages, props: true },
   { path: '/recycle', name: 'RecycleBin', component: RecycleBin },
   { path: '/folders', name: 'Folders', component: Placeholder, meta: { title: '文件夹' } },
   { path: '/albums', name: 'Albums', component: Placeholder, meta: { title: '相册' } },

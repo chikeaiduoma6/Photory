@@ -8,7 +8,8 @@ import { useAuthStore } from '@/stores/auth'
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
-const username = computed(() => authStore.user?.username || '访客')
+
+const palette = ['#ff9db8', '#8ed0ff', '#ffd27f', '#9dd0a5', '#c3a0ff', '#f7a3ff']
 
 const apiBase = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '')
 const withBase = (path: string) => (!path ? '' : path.startsWith('http') ? path : `${apiBase}${path}`)
@@ -35,15 +36,13 @@ const editorState = ref({
   rotation: 0,
   zoom: 1,
   adjustments: { ...baseAdjustments },
+  cropBox: { x: 0, y: 0, w: 1, h: 1 },
 })
 
-// 分模块历史，仅作用于本模块
-const cropHistory = ref([{ cropPreset: editorState.value.cropPreset, customCrop: { ...editorState.value.customCrop } }])
+const cropHistory = ref([{ ...editorState.value }])
 const cropCursor = ref(0)
-
 const rotateHistory = ref([{ rotation: editorState.value.rotation, zoom: editorState.value.zoom }])
 const rotateCursor = ref(0)
-
 const adjustHistory = ref([{ ...editorState.value.adjustments }])
 const adjustCursor = ref(0)
 
@@ -51,15 +50,17 @@ const compareMode = ref<'side' | 'main'>('side')
 const showOriginal = ref(false)
 const exportOption = ref<'override' | 'new'>('override')
 const exportName = ref('')
-const exportTags = ref('')
 const exportFolder = ref('')
-const versionHistory = ref<{ name: string; created_at: string; note: string; type: 'origin' | 'edit' }[]>([])
-const currentVersionIndex = ref(0)
+const exportTags = ref<{ name: string; color: string }[]>([])
+const newExportTag = ref('')
+const newExportColor = ref(palette[0])
+const versionHistory = ref<{ id?: number; name: string; created_at: string; note: string; type: 'origin' | 'edit' }[]>([])
 
 const fallbackImage = new URL('../assets/pink_sky.jpg', import.meta.url).href
 const tokenParam = computed(() => (authStore.token ? `?jwt=${authStore.token}` : ''))
-const originalUrl = computed(() => (detail.value ? withBase(`${detail.value.raw_url}${tokenParam.value}`) : ''))
-const thumbUrl = computed(() => (detail.value ? withBase(`${detail.value.thumb_url || detail.value.raw_url}${tokenParam.value}`) : ''))
+const versionStamp = computed(() => (detail.value?.updated_at ? `&v=${encodeURIComponent(detail.value.updated_at)}` : ''))
+const originalUrl = computed(() => (detail.value ? withBase(`${detail.value.raw_url}${tokenParam.value}${versionStamp.value}`) : ''))
+const thumbUrl = computed(() => (detail.value ? withBase(`${detail.value.thumb_url || detail.value.raw_url}${tokenParam.value}${versionStamp.value}`) : ''))
 const previewSrc = computed(() => originalUrl.value || thumbUrl.value || fallbackImage)
 
 const cropPresets = [
@@ -100,7 +101,26 @@ const cropAspectLabel = computed(() => {
   }
   return cropPresets.find(p => p.value === editorState.value.cropPreset)?.label || '自由'
 })
-const cropGuideStyle = computed(() => (cropAspect.value === 'auto' ? {} : { aspectRatio: cropAspect.value }))
+const cropGuideStyle = computed(() => {
+  const box = editorState.value.cropBox
+  return {
+    left: `${box.x * 100}%`,
+    top: `${box.y * 100}%`,
+    width: `${box.w * 100}%`,
+    height: `${box.h * 100}%`,
+    aspectRatio: cropAspect.value === 'auto' ? 'unset' : cropAspect.value,
+  }
+})
+const clipStyle = computed(() => {
+  const box = editorState.value.cropBox
+  const top = box.y * 100
+  const left = box.x * 100
+  const bottom = (1 - box.y - box.h) * 100
+  const right = (1 - box.x - box.w) * 100
+  return {
+    clipPath: `inset(${top}% ${right}% ${bottom}% ${left}%)`,
+  }
+})
 
 const editedStyle = computed(() => {
   const a = editorState.value.adjustments
@@ -116,38 +136,20 @@ const editedStyle = computed(() => {
       a.temperature
     ) / 140}) drop-shadow(0 8px 18px rgba(0,0,0,${0.08 + sharpen}))`,
     transform: `rotate(${editorState.value.rotation}deg) scale(${editorState.value.zoom})`,
+    ...clipStyle.value,
   }
 })
-const currentStateLabel = computed(() => `${cropAspectLabel.value} · 旋转 ${editorState.value.rotation}°`)
+const exifTags = computed(() => Array.from(new Set(detail.value?.exif_tags || [])))
 
 async function fetchDetail() {
   loading.value = true
   try {
     const res = await axios.get(`/api/v1/images/${route.params.id}`)
     detail.value = res.data
-    versionHistory.value = [
-      {
-        name: res.data.name || res.data.original_name || '当前版本',
-        created_at: res.data.updated_at || res.data.created_at || new Date().toISOString(),
-        note: '当前版本',
-        type: 'edit',
-      },
-      {
-        name: '原图',
-        created_at: res.data.created_at || new Date().toISOString(),
-        note: '原始上传版本',
-        type: 'origin',
-      },
-      ...((res.data.version_history as any[]) || []).map(item => ({
-        name: item.name || '历史版本',
-        created_at: item.created_at || new Date().toISOString(),
-        note: item.note || '历史记录',
-        type: 'edit',
-      })),
-    ]
     exportName.value = res.data.name || res.data.original_name || '编辑版本'
     exportFolder.value = res.data.folder || '默认图库'
-    exportTags.value = (res.data.tags || []).join(',')
+    exportTags.value = (res.data.tag_objects || []).map((t: any) => ({ name: t.name, color: t.color || palette[0] }))
+    versionHistory.value = (res.data.version_history || []).map((v: any) => ({ ...v, type: 'edit' as const }))
   } catch (err) {
     ElMessage.error('获取图片详情失败')
     router.push('/')
@@ -156,23 +158,32 @@ async function fetchDetail() {
   }
 }
 
-// --- 分模块历史操作 ---
 function pushCropHistory() {
   cropHistory.value = cropHistory.value.slice(0, cropCursor.value + 1)
-  cropHistory.value.push({ cropPreset: editorState.value.cropPreset, customCrop: { ...editorState.value.customCrop } })
+  cropHistory.value.push({
+    ...editorState.value,
+    customCrop: { ...editorState.value.customCrop },
+    cropBox: { ...editorState.value.cropBox },
+    adjustments: { ...editorState.value.adjustments },
+  })
   if (cropHistory.value.length > 30) cropHistory.value.shift()
   cropCursor.value = cropHistory.value.length - 1
 }
 function cropUndo() {
   if (cropCursor.value <= 0) return
   cropCursor.value -= 1
-  const state = cropHistory.value[cropCursor.value]
-  editorState.value.cropPreset = state.cropPreset
-  editorState.value.customCrop = { ...state.customCrop }
+  const state: any = cropHistory.value[cropCursor.value]
+  editorState.value = {
+    ...state,
+    customCrop: { ...state.customCrop },
+    cropBox: { ...state.cropBox },
+    adjustments: { ...state.adjustments },
+  }
 }
 function cropReset() {
   editorState.value.cropPreset = 'free'
   editorState.value.customCrop = { width: 1920, height: 1080 }
+  editorState.value.cropBox = { x: 0, y: 0, w: 1, h: 1 }
   pushCropHistory()
 }
 
@@ -210,14 +221,44 @@ function adjustReset() {
   editorState.value.adjustments = { ...baseAdjustments }
   pushAdjustHistory()
 }
-// --- end 分模块历史 ---
+
+function centerBoxForRatio(ratio: number) {
+  ratio = Math.max(0.01, ratio)
+  let w = 0.9
+  let h = w / ratio
+  if (h > 0.9) {
+    h = 0.9
+    w = h * ratio
+  }
+  const x = (1 - w) / 2
+  const y = (1 - h) / 2
+  editorState.value.cropBox = { x, y, w, h }
+}
 
 function applyCropPreset(value: string) {
   editorState.value.cropPreset = value
+  if (value === 'free') {
+    editorState.value.cropBox = { x: 0, y: 0, w: 1, h: 1 }
+  } else if (value === 'custom') {
+    const w = Number(editorState.value.customCrop.width) || 1
+    const h = Number(editorState.value.customCrop.height) || 1
+    centerBoxForRatio(w / h)
+  } else {
+    const preset = cropPresets.find(p => p.value === value)
+    if (preset && preset.aspect !== 'auto') {
+      const parts = preset.aspect.split('/').map(s => Number(s.trim()))
+      const a = parts[0]
+      const b = parts[1]
+      if (a > 0 && b > 0) centerBoxForRatio(a / b)
+    }
+  }
   pushCropHistory()
 }
 function updateCustomCrop() {
   if (editorState.value.cropPreset !== 'custom') return
+  const w = Number(editorState.value.customCrop.width) || 1
+  const h = Number(editorState.value.customCrop.height) || 1
+  centerBoxForRatio(w / h)
   pushCropHistory()
 }
 
@@ -272,25 +313,108 @@ function download() {
   if (originalUrl.value) window.open(originalUrl.value, '_blank')
 }
 
-function saveVersion(mode?: 'override' | 'new') {
+function addExportTag() {
+  const name = newExportTag.value.trim()
+  if (!name) return
+  if (exportTags.value.some(t => t.name === name)) {
+    ElMessage.warning('标签已存在')
+    return
+  }
+  exportTags.value.push({ name, color: newExportColor.value })
+  newExportTag.value = ''
+  newExportColor.value = palette[Math.floor(Math.random() * palette.length)]
+}
+function removeExportTag(name: string) {
+  exportTags.value = exportTags.value.filter(t => t.name !== name)
+}
+
+async function saveVersion(mode?: 'override' | 'new') {
   const target = mode || exportOption.value
   saving.value = true
-  setTimeout(() => {
-    const entry = {
-      name: exportName.value || `${detail.value?.name || '编辑版本'}-${Date.now()}`,
-      created_at: new Date().toISOString(),
-      note: target === 'override' ? '覆盖当前版本' : '另存为新图片',
-      type: 'edit' as const,
+  try {
+    const payload: any = {
+      option: target,
+      name: exportName.value || detail.value?.name,
+      folder: exportFolder.value || detail.value?.folder,
+      tags: exportTags.value,
+      crop: {
+        preset: editorState.value.cropPreset,
+        width: editorState.value.customCrop.width,
+        height: editorState.value.customCrop.height,
+      },
+      rotation: editorState.value.rotation,
+      zoom: editorState.value.zoom,
+      adjustments: editorState.value.adjustments,
     }
-    if (target === 'override') {
-      versionHistory.value[currentVersionIndex.value] = entry
-    } else {
-      versionHistory.value.unshift(entry)
-      currentVersionIndex.value = 0
+    if (editorState.value.cropPreset === 'free') {
+      payload.crop_box = editorState.value.cropBox
     }
-    ElMessage.success(target === 'override' ? '已覆盖当前版本' : '已另存新版本')
+    const res = await axios.post(`/api/v1/images/${route.params.id}/export`, payload)
+    const item = res.data.item
+    detail.value = item
+    versionHistory.value = (item.version_history || []).map((v: any) => ({ ...v, type: 'edit' as const }))
+    ElMessage.success(target === 'override' ? '已覆盖当前版本' : '已另存为新图片')
+    if (target === 'new' && item.id && item.id !== Number(route.params.id)) {
+      router.replace(`/images/${item.id}/edit`)
+    }
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.message || '保存失败')
+  } finally {
     saving.value = false
-  }, 420)
+  }
+}
+
+const stageRef = ref<HTMLElement | null>(null)
+const dragging = ref(false)
+const dragMode = ref<'move' | 'draw'>('move')
+const dragStart = ref({ x: 0, y: 0, box: { x: 0, y: 0, w: 1, h: 1 } })
+
+function stagePos(e: MouseEvent) {
+  const rect = stageRef.value?.getBoundingClientRect()
+  if (!rect) return { x: 0, y: 0 }
+  return {
+    x: Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width)),
+    y: Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height)),
+  }
+}
+
+function startCrop(e: MouseEvent) {
+  if (editorState.value.cropPreset !== 'free') return
+  dragging.value = true
+  dragMode.value = (e.target as HTMLElement).classList.contains('area') ? 'move' : 'draw'
+  dragStart.value = { x: stagePos(e).x, y: stagePos(e).y, box: { ...editorState.value.cropBox } }
+  window.addEventListener('mousemove', onCropMove)
+  window.addEventListener('mouseup', endCrop)
+}
+
+function onCropMove(e: MouseEvent) {
+  if (!dragging.value) return
+  const pos = stagePos(e)
+  const box = { ...editorState.value.cropBox }
+  if (dragMode.value === 'move') {
+    const dx = pos.x - dragStart.value.x
+    const dy = pos.y - dragStart.value.y
+    box.x = Math.min(1 - box.w, Math.max(0, dragStart.value.box.x + dx))
+    box.y = Math.min(1 - box.h, Math.max(0, dragStart.value.box.y + dy))
+  } else {
+    const x1 = Math.min(pos.x, dragStart.value.x)
+    const y1 = Math.min(pos.y, dragStart.value.y)
+    const w = Math.abs(pos.x - dragStart.value.x)
+    const h = Math.abs(pos.y - dragStart.value.y)
+    box.x = Math.max(0, Math.min(1, x1))
+    box.y = Math.max(0, Math.min(1, y1))
+    box.w = Math.min(1 - box.x, w)
+    box.h = Math.min(1 - box.y, h)
+  }
+  editorState.value.cropBox = box
+}
+
+function endCrop() {
+  if (!dragging.value) return
+  dragging.value = false
+  window.removeEventListener('mousemove', onCropMove)
+  window.removeEventListener('mouseup', endCrop)
+  pushCropHistory()
 }
 
 onMounted(fetchDetail)
@@ -310,6 +434,7 @@ onMounted(fetchDetail)
       <nav>
         <a v-for="item in [
           { label: '首页', icon: '🏠', path: '/' },
+          { label: '搜索引擎', icon: '🔎', path: '/search' },
           { label: '上传中心', icon: '☁️', path: '/upload' },
           { label: '标签', icon: '🏷️', path: '/tags' },
           { label: '文件夹', icon: '📁', path: '/folders' },
@@ -344,8 +469,14 @@ onMounted(fetchDetail)
             <div class="name-tags">
               <div class="img-name">{{ detail.name || detail.original_name }}</div>
               <div class="tag-line">
-                <span v-for="t in detail.tags" :key="t" class="tag-chip">{{ t }}</span>
-                <span v-if="!detail.tags?.length" class="muted">暂无标签</span>
+                <span v-for="t in detail.tag_objects || []" :key="t.id || t.name" class="tag-chip" :style="{ background: (t.color || '') + '22', color: '#b05f7a', borderColor: t.color || '#ff9db8' }">
+                  <span class="dot" :style="{ background: t.color }"></span>{{ t.name }}
+                </span>
+                <span v-if="!detail.tag_objects?.length" class="muted">暂无自定义标签</span>
+              </div>
+              <div class="tag-line exif-line">
+                <span v-for="t in exifTags" :key="t" class="tag-chip exif">{{ t }}</span>
+                <span v-if="!exifTags.length" class="muted">暂无 EXIF 标签</span>
               </div>
             </div>
             <div class="view-buttons">
@@ -353,12 +484,12 @@ onMounted(fetchDetail)
                 {{ compareMode === 'side' ? '隐藏对比' : '双栏对比' }}
               </button>
               <button class="pill-btn mini ghost" @click="showOriginal = true">查看原图</button>
-              <button class="pill-btn mini ghost" @click="showOriginal = false">显示编辑图</button>
+              <button class="pill-btn mini ghost" @click="showOriginal = false">显示编辑版</button>
             </div>
           </div>
 
           <div class="preview-box">
-            <div class="image-stage" @mouseleave="showOriginal = false">
+            <div class="image-stage" ref="stageRef" @mouseleave="showOriginal = false" @mousedown="startCrop">
               <img :src="previewSrc" :alt="detail.name" class="main-img" :style="showOriginal ? {} : editedStyle" />
               <div class="crop-guides" :class="{ active: cropAspect !== 'auto' }">
                 <div class="area" :style="cropGuideStyle">
@@ -374,7 +505,7 @@ onMounted(fetchDetail)
               <img :src="previewSrc" :alt="detail.name" />
             </div>
             <div class="compare-card">
-              <div class="card-title">编辑后</div>
+              <div class="card-title">编辑版</div>
               <img :src="previewSrc" :alt="detail.name" :style="editedStyle" />
             </div>
           </div>
@@ -409,8 +540,8 @@ onMounted(fetchDetail)
           <div class="control-card">
             <div class="section-title">旋转</div>
             <div class="btn-row">
-              <button class="chip-btn" @click="applyRotation(-90)">↺ 90°</button>
-              <button class="chip-btn" @click="applyRotation(90)">↻ 90°</button>
+              <button class="chip-btn" @click="applyRotation(-90)">↺90°</button>
+              <button class="chip-btn" @click="applyRotation(90)">↻90°</button>
               <button class="chip-btn ghost" @click="updateRotation(0, true)">归零</button>
             </div>
             <div class="slider-row">
@@ -474,21 +605,37 @@ onMounted(fetchDetail)
             <div class="form-grid">
               <label>图片名称</label>
               <input class="text-input" v-model="exportName" placeholder="输入图片名称" />
-              <label>标签（逗号分隔）</label>
-              <input class="text-input" v-model="exportTags" placeholder="如：旅行,日落" />
               <label>文件夹</label>
               <input class="text-input" v-model="exportFolder" placeholder="如：默认图库" />
+            </div>
+            <div class="tag-add">
+              <input class="text-input" v-model="newExportTag" placeholder="输入标签名称" @keyup.enter="addExportTag" />
+              <input v-model="newExportColor" type="color" class="color-picker" />
+              <button class="pill-btn mini" @click="addExportTag">添加标签</button>
+            </div>
+            <div class="tag-line export-tags">
+              <span
+                v-for="t in exportTags"
+                :key="t.name"
+                class="tag-chip"
+                :style="{ background: (t.color || '') + '22', color: '#b05f7a', borderColor: t.color || '#ff9db8' }"
+                @click="removeExportTag(t.name)"
+              >
+                <span class="dot" :style="{ background: t.color }"></span>{{ t.name }} ×
+              </span>
+              <span v-if="!exportTags.length" class="muted">暂无标签，点击上方添加</span>
             </div>
             <div class="history-actions">
               <button class="pill-btn" :disabled="saving" @click="saveVersion(exportOption)">应用保存</button>
             </div>
 
             <div class="version-list">
+              <div v-if="!versionHistory.length" class="muted">暂无历史版本（仅覆盖操作会记录）</div>
               <div v-for="(version, index) in versionHistory" :key="index" class="version-item">
                 <div class="dot" :class="version.type"></div>
                 <div class="v-body">
                   <div class="v-title">{{ version.name }}</div>
-                  <div class="v-note">{{ version.note }}</div>
+                  <div class="v-note">{{ version.note || '历史版本' }}</div>
                 </div>
                 <span class="v-time">{{ version.created_at?.slice(0, 16) }}</span>
               </div>
@@ -531,16 +678,19 @@ main { flex: 1; display: flex; flex-direction: column; }
 .info-inline { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; gap: 10px; flex-wrap: wrap; }
 .img-name { font-size: 16px; color: #613448; font-weight: 600; }
 .tag-line { display: flex; gap: 6px; flex-wrap: wrap; }
-.tag-chip { background: #ffe4f0; border-radius: 999px; padding: 4px 10px; font-size: 12px; color: #b05f7a; }
+.tag-line.exif-line { margin-top: 4px; }
+.tag-chip { background: #ffe4f0; border-radius: 999px; padding: 4px 10px; font-size: 12px; color: #b05f7a; border: 1px solid transparent; display: inline-flex; align-items: center; gap: 6px; }
+.tag-chip .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+.tag-chip.exif { background: #e9f4ff; color: #5a6f8c; border-color: #b6d6ff; }
 .muted { color: #b57a90; font-size: 12px; }
 .view-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
 
 .preview-box { margin-top: 12px; padding: 12px; background: #fdf6fa; border-radius: 18px; }
-.image-stage { position: relative; border-radius: 16px; background: radial-gradient(circle at 30% 20%, rgba(255, 214, 230, 0.4), rgba(255, 231, 240, 0.95)); height: 520px; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.image-stage { position: relative; border-radius: 16px; background: radial-gradient(circle at 30% 20%, rgba(255, 214, 230, 0.4), rgba(255, 231, 240, 0.95)); height: 520px; display: flex; align-items: center; justify-content: center; overflow: hidden; user-select: none; }
 .main-img { max-width: 100%; max-height: 100%; border-radius: 14px; transition: filter 0.12s ease, transform 0.12s ease; background: #f6e9f1; }
-.crop-guides { position: absolute; inset: 14px; border: 1px dashed transparent; border-radius: 14px; pointer-events: none; display: flex; align-items: center; justify-content: center; }
+.crop-guides { position: absolute; inset: 14px; border: 1px dashed transparent; border-radius: 14px; pointer-events: none; }
+.crop-guides .area { position: absolute; border: 1px solid rgba(255, 120, 165, 0.8); background: rgba(255, 255, 255, 0.14); display: flex; align-items: center; justify-content: center; color: #ff6fa0; font-size: 12px; border-radius: 10px; pointer-events: auto; }
 .crop-guides.active { border-color: rgba(255, 157, 184, 0.6); }
-.crop-guides .area { width: 92%; max-width: 760px; border: 1px solid rgba(255, 120, 165, 0.8); border-radius: 14px; display: flex; align-items: center; justify-content: center; color: #ff6fa0; font-size: 12px; background: rgba(255, 255, 255, 0.14); }
 .compare-panel { margin-top: 12px; display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
 .compare-card { background: #fff8fb; border-radius: 14px; padding: 10px; box-shadow: 0 10px 18px rgba(255, 152, 201, 0.25); }
 .compare-card img { width: 100%; border-radius: 10px; object-fit: cover; background: #f9edf3; }
@@ -569,6 +719,8 @@ main { flex: 1; display: flex; flex-direction: column; }
 .radio { display: flex; align-items: center; gap: 6px; }
 .form-grid { display: grid; grid-template-columns: 100px 1fr; gap: 6px 10px; font-size: 13px; color: #a35d76; }
 .text-input { width: 100%; border-radius: 12px; border: 1px solid rgba(255, 180, 205, 0.9); padding: 8px 10px; font-size: 13px; color: #4b4b4b; outline: none; }
+.tag-add { display: grid; grid-template-columns: 1fr 100px auto; gap: 12px; margin: 8px 0; align-items: center; }
+.tag-line.export-tags { margin-top: 6px; }
 .history-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
 .version-list { display: flex; flex-direction: column; gap: 8px; max-height: 220px; overflow: auto; }
 .version-item { display: flex; align-items: center; gap: 8px; background: #fff5f8; border-radius: 12px; padding: 8px 10px; }

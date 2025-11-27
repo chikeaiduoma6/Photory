@@ -9,6 +9,8 @@ const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
 
+const palette = ['#ff9db8', '#8ed0ff', '#ffd27f', '#9dd0a5', '#c3a0ff', '#f7a3ff']
+
 const apiBase = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '')
 const withBase = (path: string) => (!path ? '' : path.startsWith('http') ? path : `${apiBase}${path}`)
 
@@ -16,23 +18,32 @@ const detail = ref<any>(null)
 const loading = ref(true)
 const aiLoading = ref(false)
 const aiTags = ref<string[]>([])
-const aiDescription = ref('这里是一个 AI 生成的图片描述，点击按钮可更新～')
+const aiDescription = ref('这里是 AI 生成的图片描述，点击按钮可更新～')
 const newTag = ref('')
+const newTagColor = ref(palette[0])
 
 const tokenParam = computed(() => (authStore.token ? `?jwt=${authStore.token}` : ''))
-const imageUrl = computed(() => (detail.value ? withBase(`${detail.value.raw_url}${tokenParam.value}`) : ''))
-const thumbUrl = computed(() => (detail.value ? withBase(`${detail.value.thumb_url || detail.value.raw_url}${tokenParam.value}`) : ''))
+const versionStamp = computed(() => (detail.value?.updated_at ? `&v=${encodeURIComponent(detail.value.updated_at)}` : ''))
+const imageUrl = computed(() =>
+  detail.value ? withBase(`${detail.value.raw_url}${tokenParam.value}${versionStamp.value}`) : ''
+)
+const thumbUrl = computed(() =>
+  detail.value ? withBase(`${detail.value.thumb_url || detail.value.raw_url}${tokenParam.value}${versionStamp.value}`) : ''
+)
 const heroUrl = computed(() => imageUrl.value || thumbUrl.value)
+const customTags = computed(() => detail.value?.tag_objects || [])
 const exifTags = computed(() => {
   if (!detail.value) return []
-  const arr = [detail.value.camera, detail.value.lens, detail.value.iso, detail.value.aperture, detail.value.exposure]
-    .filter(Boolean)
-    .map((v: string) => String(v))
+  const exif = detail.value.exif_tags || []
+  const wh = detail.value.width && detail.value.height ? [`${detail.value.width}x${detail.value.height}`] : []
+  const arr = [...exif, ...wh].filter(Boolean).map((v: string) => String(v))
   return Array.from(new Set(arr))
 })
+const historyList = computed(() => detail.value?.version_history || [])
 
 const links = [
   { label: '首页', icon: '🏠', path: '/' },
+  { label: '搜索引擎', icon: '🔎', path: '/search' },
   { label: '上传中心', icon: '☁️', path: '/upload' },
   { label: '标签', icon: '🏷️', path: '/tags' },
   { label: '文件夹', icon: '📁', path: '/folders' },
@@ -43,6 +54,7 @@ const links = [
   { label: '回收站', icon: '🗑️', path: '/recycle' },
   { label: '设置', icon: '⚙️', path: '/settings' },
 ]
+
 const currentPath = computed(() => router.currentRoute.value.path)
 function go(path: string) {
   router.push(path)
@@ -71,15 +83,29 @@ async function fetchDetail() {
   }
 }
 
+function normalizeColor(raw?: string | null, idx = 0, name = '') {
+  if (!raw) return palette[(idx + name.length) % palette.length]
+  const hex = raw.match(/^#([0-9a-fA-F]{6})/)
+  if (hex) return `#${hex[1]}`
+  const rgba = raw.match(/^rgba?\((\d{1,3}),\s*(\d{1,3}),\s*(\d{1,3})/)
+  if (rgba) {
+    const [r, g, b] = rgba.slice(1, 4).map(n => Math.max(0, Math.min(255, Number(n))))
+    return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`
+  }
+  return palette[(idx + name.length) % palette.length]
+}
+
 async function addTag() {
   const tag = newTag.value.trim()
   if (!tag) return
   try {
     const res = await axios.post(`/api/v1/images/${route.params.id}/tags`, {
-      tags: [...(detail.value?.tags || []), tag],
+      tags: [...(customTags.value || []), { name: tag, color: newTagColor.value }],
     })
     detail.value.tags = res.data.tags
+    detail.value.tag_objects = res.data.tag_objects || []
     newTag.value = ''
+    newTagColor.value = palette[Math.floor(Math.random() * palette.length)]
     ElMessage.success('标签已更新')
   } catch (err: any) {
     ElMessage.error(err?.response?.data?.message || '添加标签失败')
@@ -87,11 +113,12 @@ async function addTag() {
 }
 
 function removeTag(t: string) {
-  const left = (detail.value?.tags || []).filter((x: string) => x !== t)
+  const left = (customTags.value || []).filter((x: any) => x.name !== t).map((x: any) => x.name)
   axios
     .post(`/api/v1/images/${route.params.id}/tags`, { tags: left })
     .then(res => {
       detail.value.tags = res.data.tags
+      detail.value.tag_objects = res.data.tag_objects || []
     })
     .catch(() => ElMessage.error('更新标签失败'))
 }
@@ -209,11 +236,20 @@ onMounted(fetchDetail)
             <div class="field tags">
               <label>自定义标签</label>
               <div class="tag-list">
-                <span v-for="t in detail.tags" :key="t" class="tag" @click="removeTag(t)">{{ t }} ×</span>
-                <span v-if="!detail.tags?.length" class="muted">暂无自定义标签</span>
+                <span
+                  v-for="(t, idx) in customTags"
+                  :key="t.id || t.name"
+                  class="tag"
+                  :style="{ background: (t.color || '') + '22', color: '#b05f7a', borderColor: t.color || '#ff9db8' }"
+                  @click="removeTag(t.name)"
+                >
+                  <span class="dot" :style="{ background: t.color }"></span>{{ t.name }} ×
+                </span>
+                <span v-if="!customTags?.length" class="muted">暂无自定义标签</span>
               </div>
               <div class="tag-input">
                 <input v-model="newTag" placeholder="输入新标签后回车" @keyup.enter="addTag" />
+                <input v-model="newTagColor" type="color" class="color-picker" />
                 <button class="pill-btn mini" @click="addTag">添加</button>
               </div>
             </div>
@@ -234,7 +270,7 @@ onMounted(fetchDetail)
               </div>
               <div class="value">{{ aiDescription }}</div>
               <button class="pill-btn mini" :disabled="aiLoading" @click="generateAiTags">
-                {{ aiLoading ? '生成中…' : '更新 AI 分析' }}
+                {{ aiLoading ? '生成中...' : '更新 AI 分析' }}
               </button>
             </div>
 
@@ -247,30 +283,17 @@ onMounted(fetchDetail)
           </div>
 
           <div class="panel">
-            <h3>EXIF 信息</h3>
-            <div class="exif-grid">
-              <div><label>相机</label><div>{{ detail.camera || '--' }}</div></div>
-              <div><label>镜头</label><div>{{ detail.lens || '--' }}</div></div>
-              <div><label>光圈</label><div>{{ detail.aperture || '--' }}</div></div>
-              <div><label>快门</label><div>{{ detail.exposure || '--' }}</div></div>
-              <div><label>ISO</label><div>{{ detail.iso || '--' }}</div></div>
-              <div><label>焦距</label><div>{{ detail.focal || '--' }}</div></div>
-              <div><label>拍摄时间</label><div>{{ formatDate(detail.taken_at) }}</div></div>
-              <div><label>分辨率</label><div>{{ detail.width }} × {{ detail.height }}</div></div>
-              <div><label>纬度</label><div>{{ detail.latitude ?? '--' }}</div></div>
-              <div><label>经度</label><div>{{ detail.longitude ?? '--' }}</div></div>
-            </div>
-          </div>
-
-          <div class="panel">
             <h3>版本历史</h3>
-            <div class="history-card">
-              <img :src="thumbUrl || imageUrl" alt="thumb" />
-              <div>
-                <div class="value">{{ detail.name }}</div>
-                <div class="muted">{{ formatDate(detail.created_at) }}</div>
+            <div v-if="!historyList.length" class="muted">暂无历史版本（未曾覆盖保存）</div>
+            <div v-else class="version-list">
+              <div v-for="(v, idx) in historyList" :key="idx" class="version-item">
+                <div class="dot"></div>
+                <div class="v-body">
+                  <div class="v-title">{{ v.name }}</div>
+                  <div class="v-note">{{ v.note || '历史版本' }}</div>
+                </div>
+                <span class="v-time">{{ formatDate(v.created_at) }}</span>
               </div>
-              <span class="chip primary">当前</span>
             </div>
           </div>
         </div>
@@ -280,7 +303,7 @@ onMounted(fetchDetail)
     </main>
   </div>
 
-  <div v-else class="loading">加载中…</div>
+  <div v-else class="loading">加载中...</div>
 </template>
 
 <style scoped>
@@ -317,17 +340,27 @@ main { flex: 1; display: flex; flex-direction: column; }
 .value { font-size: 14px; color: #4b4b4b; }
 .muted { color: #b57a90; font-size: 13px; }
 .tag-list { display: flex; flex-wrap: wrap; gap: 6px; }
-.tag { background: #ffe4f0; border-radius: 999px; padding: 4px 10px; font-size: 12px; color: #b05f7a; cursor: pointer; }
+.tag { border-radius: 999px; padding: 4px 10px; font-size: 12px; color: #b05f7a; cursor: pointer; border: 1px solid transparent; display: inline-flex; align-items: center; gap: 6px; }
 .tag.alt { background: #ffeef5; }
-.tag.ghost { background: #f4f4f4; color: #7a7a7a; cursor: default; }
-.tag-input { display: flex; gap: 8px; margin-top: 6px; }
+.tag.ghost { background: #f4f4f4; color: #7a7a7a; cursor: default; border: none; }
+.tag .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.tag-input { display: flex; gap: 8px; margin-top: 6px; align-items: center; }
 .tag-input input { flex: 1; border-radius: 12px; border: 1px solid rgba(255, 190, 210, 0.9); padding: 6px 10px; font-size: 13px; outline: none; }
+.color-picker { width: 44px; height: 32px; padding: 0; border: 1px solid rgba(255, 190, 210, 0.9); border-radius: 8px; background: #fff; }
 .chip { display: inline-flex; align-items: center; padding: 4px 10px; border-radius: 999px; font-size: 12px; background: #ffeef5; color: #b05f7a; }
 .chip.primary { background: linear-gradient(135deg, #ff8bb3, #ff6fa0); color: #fff; }
 .exif-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 12px; }
 .exif-grid label { font-size: 12px; color: #a35d76; }
 .history-card { display: flex; align-items: center; gap: 10px; background: #fff4f8; border-radius: 14px; padding: 10px; }
 .history-card img { width: 56px; height: 56px; object-fit: cover; border-radius: 10px; }
+.version-list { display: flex; flex-direction: column; gap: 8px; }
+.version-item { display: flex; align-items: center; gap: 10px; background: #fff5f8; border-radius: 10px; padding: 8px 10px; }
+.version-item .dot { width: 10px; height: 10px; border-radius: 50%; background: #7ac7ff; }
+.v-body { flex: 1; }
+.v-title { font-size: 13px; color: #613448; }
+.v-note { font-size: 12px; color: #b57a90; }
+.v-time { font-size: 12px; color: #b57a90; }
+
 footer { text-align: center; font-size: 12px; color: #b57a90; padding: 12px 0 16px; }
 .loading { display: flex; align-items: center; justify-content: center; height: 100vh; color: #a35d76; }
 :deep(.pink-confirm .el-message-box__title) { color: #ff4c8a; }

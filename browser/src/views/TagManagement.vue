@@ -11,22 +11,31 @@ interface TagRecord {
   color: string
   count: number
   created_at: string
-  images: number[]
+}
+
+interface Summary {
+  total_tags: number
+  total_images: number
+  distribution: TagRecord[]
+  word_cloud: Array<TagRecord & { size?: number }>
 }
 
 const router = useRouter()
 const authStore = useAuthStore()
 const username = computed(() => authStore.user?.username || '访客')
+
+const palette = ['#ff9db8', '#8ed0ff', '#ffd27f', '#9dd0a5', '#c3a0ff', '#f7a3ff']
+
 const loading = ref(false)
+const saving = ref(false)
 const filterKeyword = ref('')
-const tags = ref<TagRecord[]>([
-  { id: 1, name: '自然', color: '#ffb3c8', count: 24, created_at: '2025-11-08', images: [1, 2, 3] },
-  { id: 2, name: '旅行', color: '#ff9db8', count: 18, created_at: '2025-11-07', images: [4, 5, 6] },
-  { id: 3, name: '美食', color: '#ff86a8', count: 12, created_at: '2025-11-06', images: [7, 8, 9] },
-  { id: 4, name: '城市', color: '#ffadc9', count: 15, created_at: '2025-11-05', images: [10, 11] },
-  { id: 5, name: '人像', color: '#ff7f9a', count: 8, created_at: '2025-11-04', images: [12] },
-  { id: 6, name: '海洋', color: '#8ed0ff', count: 10, created_at: '2025-11-03', images: [13] },
-])
+const chartMode = ref<'bar' | 'pie'>('bar')
+const page = ref(1)
+const pageSize = 6
+const total = ref(0)
+const tags = ref<TagRecord[]>([])
+const summary = ref<Summary>({ total_tags: 0, total_images: 0, distribution: [], word_cloud: [] })
+const selectedIds = ref<number[]>([])
 
 const dialogVisible = ref(false)
 const dialogMode = ref<'create' | 'edit'>('create')
@@ -36,36 +45,94 @@ const mergeDialogVisible = ref(false)
 const mergeSources = ref<number[]>([])
 const mergeTarget = ref<number | null>(null)
 
-const drawerVisible = ref(false)
-const activeTag = ref<TagRecord | null>(null)
-
 const links = [
   { label: '首页', icon: '🏠', path: '/' },
+  { label: '搜索引擎', icon: '🔎', path: '/search' },
   { label: '上传中心', icon: '☁️', path: '/upload' },
   { label: '标签', icon: '🏷️', path: '/tags' },
   { label: '文件夹', icon: '📁', path: '/folders' },
   { label: '相册', icon: '📚', path: '/albums' },
   { label: '智能分类', icon: '🧠', path: '/smart' },
-  { label: 'AI工作台', icon: '🤖', path: '/ai' },
+  { label: 'AI工作区', icon: '🤖', path: '/ai' },
   { label: '任务中心', icon: '🧾', path: '/tasks' },
   { label: '回收站', icon: '🗑️', path: '/recycle' },
   { label: '设置', icon: '⚙️', path: '/settings' },
 ]
+
 const currentPath = computed(() => router.currentRoute.value.path)
 function go(path: string) { router.push(path) }
 function isActive(path: string) { return currentPath.value === path || currentPath.value.startsWith(path + '/') }
 
-const filteredTags = computed(() =>
-  tags.value.filter(t => t.name.toLowerCase().includes(filterKeyword.value.trim().toLowerCase()))
+function normalizeColor(raw?: string | null, idx = 0, name = '') {
+  if (!raw) {
+    const code = name ? [...name].reduce((s, c) => s + c.charCodeAt(0), idx) : idx
+    return palette[code % palette.length]
+  }
+  const val = raw.trim()
+  const hex = val.match(/^#([0-9a-fA-F]{6})([0-9a-fA-F]{2})?$/)
+  if (hex) return `#${hex[1]}`
+  const rgba = val.match(/^rgba?\((\d{1,3}),\s*(\d{1,3}),\s*(\d{1,3})(?:,\s*[\d.]+)?\)$/)
+  if (rgba) {
+    const [r, g, b] = rgba.slice(1, 4).map(n => Math.max(0, Math.min(255, Number(n))))
+    return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`
+  }
+  const code = name ? [...name].reduce((s, c) => s + c.charCodeAt(0), idx) : idx
+  return palette[code % palette.length]
+}
+
+const listView = computed(() =>
+  tags.value.map((t, i) => ({ ...t, color: normalizeColor(t.color, i, t.name) }))
 )
-const totalImages = computed(() => tags.value.reduce((sum, t) => sum + t.count, 0))
-const chartBars = computed(() => {
-  const max = Math.max(...tags.value.map(t => t.count), 1)
-  return tags.value.map(t => ({ ...t, height: Math.max(24, (t.count / max) * 120) }))
+const chartData = computed(() =>
+  summary.value.distribution.map((t, i) => ({ ...t, color: normalizeColor(t.color, i, t.name) }))
+)
+const wordCloud = computed(() => {
+  const src = summary.value.word_cloud.length ? summary.value.word_cloud : summary.value.distribution
+  const maxCount = Math.max(...src.map(t => t.count || 0), 1)
+  return src.map((t, i) => ({
+    ...t,
+    color: normalizeColor(t.color, i, t.name),
+    size: 14 + Math.round(((t.count || 0) / maxCount) * 18),
+  }))
 })
-const wordCloud = computed(() =>
-  tags.value.map(t => ({ ...t, size: 12 + Math.min(14, t.count) }))
-)
+const barMax = computed(() => Math.max(...chartData.value.map(t => t.count || 0), 1))
+const allSelected = computed(() => listView.value.length > 0 && selectedIds.value.length === listView.value.length)
+
+function formatDate(dateStr: string) {
+  if (!dateStr) return ''
+  return dateStr.slice(0, 10)
+}
+
+async function loadTags() {
+  loading.value = true
+  try {
+    const res = await axios.get('/api/v1/tags', {
+      params: { page: page.value, page_size: pageSize, keyword: filterKeyword.value.trim() },
+    })
+    tags.value = res.data.items || []
+    total.value = res.data.total || 0
+    selectedIds.value = []
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.message || '获取标签失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+async function loadSummary() {
+  try {
+    const res = await axios.get('/api/v1/tags/summary')
+    summary.value = res.data || summary.value
+  } catch {
+    /* ignore */
+  }
+}
+
+function handleSearch() {
+  page.value = 1
+  loadTags()
+  loadSummary()
+}
 
 function openCreate() {
   dialogMode.value = 'create'
@@ -74,78 +141,116 @@ function openCreate() {
 }
 function openEdit(tag: TagRecord) {
   dialogMode.value = 'edit'
-  form.value = { id: tag.id, name: tag.name, color: tag.color }
+  form.value = { id: tag.id, name: tag.name, color: tag.color || '#ff9db8' }
   dialogVisible.value = true
 }
-function saveTag() {
+
+async function saveTag() {
   const name = form.value.name.trim()
   if (!name) {
     ElMessage.warning('请输入标签名称')
     return
   }
-  if (dialogMode.value === 'create') {
-    const id = Date.now()
-    tags.value.unshift({ id, name, color: form.value.color, count: 0, created_at: new Date().toISOString().slice(0, 10), images: [] })
-  } else if (form.value.id) {
-    const idx = tags.value.findIndex(t => t.id === form.value.id)
-    if (idx >= 0) tags.value[idx] = { ...tags.value[idx], name, color: form.value.color }
+  const color = normalizeColor(form.value.color, 0, name)
+  saving.value = true
+  try {
+    if (dialogMode.value === 'create') {
+      await axios.post('/api/v1/tags', { name, color })
+      ElMessage.success('已创建标签')
+    } else if (form.value.id) {
+      await axios.put(`/api/v1/tags/${form.value.id}`, { name, color })
+      ElMessage.success('已更新标签')
+    }
+    dialogVisible.value = false
+    await loadTags()
+    await loadSummary()
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.message || '保存失败')
+  } finally {
+    saving.value = false
   }
-  dialogVisible.value = false
-  ElMessage.success(dialogMode.value === 'create' ? '已创建标签' : '已更新标签')
 }
-function confirmDelete(tag: TagRecord) {
-  ElMessageBox.confirm(`确定删除标签「${tag.name}」吗？该标签下的图片不会被删除。`, '删除标签', { type: 'warning' })
-    .then(() => {
-      tags.value = tags.value.filter(t => t.id !== tag.id)
-      ElMessage.success('已删除')
-    })
-    .catch(() => {})
+
+async function confirmDelete(tag: TagRecord) {
+  try {
+    await ElMessageBox.confirm(`确定删除标签「${tag.name}」吗？该标签下的图片不会被删除。`, '删除标签', { type: 'warning' })
+    await axios.delete(`/api/v1/tags/${tag.id}`)
+    ElMessage.success('已删除')
+    await loadTags()
+    await loadSummary()
+  } catch {
+    /* cancelled */
+  }
 }
+
+function toggleSelect(id: number, checked: boolean) {
+  if (checked) {
+    if (!selectedIds.value.includes(id)) selectedIds.value.push(id)
+  } else {
+    selectedIds.value = selectedIds.value.filter(x => x !== id)
+  }
+}
+
+function toggleSelectAll(checked: boolean) {
+  if (checked) selectedIds.value = listView.value.map(t => t.id)
+  else selectedIds.value = []
+}
+
+async function deleteBatch() {
+  if (!selectedIds.value.length) {
+    ElMessage.warning('请先勾选要删除的标签')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(`确定批量删除选中的 ${selectedIds.value.length} 个标签吗？`, '批量删除', { type: 'warning' })
+    await axios.post('/api/v1/tags/batch-delete', { ids: selectedIds.value })
+    ElMessage.success('已批量删除')
+    await loadTags()
+    await loadSummary()
+  } catch {
+    /* cancelled */
+  }
+}
+
 function openMerge() {
   mergeSources.value = []
   mergeTarget.value = null
   mergeDialogVisible.value = true
 }
-function submitMerge() {
+
+async function submitMerge() {
   if (!mergeTarget.value || mergeSources.value.length === 0) {
-    ElMessage.warning('请选择要合并的来源标签')
+    ElMessage.warning('请选择来源和目标标签')
     return
   }
   if (mergeSources.value.includes(mergeTarget.value)) {
     ElMessage.warning('目标标签不能与来源相同')
     return
   }
-  const target = tags.value.find(t => t.id === mergeTarget.value)
-  if (!target) return
-  let mergedCount = target.count
-  mergeSources.value.forEach(id => {
-    const tag = tags.value.find(t => t.id === id)
-    if (tag) mergedCount += tag.count
-  })
-  tags.value = tags.value.filter(t => !mergeSources.value.includes(t.id) || t.id === target.id)
-  tags.value = tags.value.map(t => (t.id === target.id ? { ...t, count: mergedCount } : t))
-  mergeDialogVisible.value = false
-  ElMessage.success('合并完成')
-}
-function openDrawer(tag: TagRecord) {
-  activeTag.value = tag
-  drawerVisible.value = true
-}
-
-// 后端接口替换占位：若提供 /api/v1/tags 列表，可替换此函数加载真实数据
-async function fetchFromServer() {
   try {
-    loading.value = true
-    const res = await axios.get('/api/v1/tags')
-    tags.value = res.data.items || tags.value
-  } catch (err) {
-    // 保留本地 mock，便于先行联调 UI
-  } finally {
-    loading.value = false
+    await axios.post('/api/v1/tags/merge', { source_ids: mergeSources.value, target_id: mergeTarget.value })
+    ElMessage.success('合并完成')
+    mergeDialogVisible.value = false
+    await loadTags()
+    await loadSummary()
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.message || '合并失败')
   }
 }
 
-onMounted(fetchFromServer)
+function handlePageChange(p: number) {
+  page.value = p
+  loadTags()
+}
+
+function goTagImages(tag: TagRecord) {
+  router.push(`/tags/${tag.id}/images?name=${encodeURIComponent(tag.name)}`)
+}
+
+onMounted(() => {
+  loadTags()
+  loadSummary()
+})
 </script>
 
 <template>
@@ -174,41 +279,84 @@ onMounted(fetchFromServer)
       <header class="topbar">
         <div class="left">
           <div class="title">标签管理中心</div>
-          <div class="subtitle">自定义分类标签，可编辑/删除/合并，和 EXIF / AI 标签分开管理</div>
+          <div class="subtitle">支持自定义分类标签，可编辑/删除/合并，包含可视化统计，与EXIF/AI标签分开管理</div>
         </div>
         <div class="right">
-          <span class="welcome">欢迎，{{ username }}</span>
-          <button class="ghost-btn" @click="openMerge">⤵ 合并标签</button>
-          <button class="primary-btn" @click="openCreate">＋ 新建标签</button>
+          <span class="welcome">欢迎你，亲爱的 Photory 用户 {{ username }}</span>
         </div>
       </header>
 
-      <section class="stats-row">
+      <section class="stats-panel">
         <div class="stat-card">
           <div class="label">标签总数</div>
-          <div class="num">{{ tags.length }}</div>
+          <div class="num">{{ summary.total_tags }}</div>
           <div class="hint">仅自定义分类标签，不含 EXIF / AI 标签</div>
         </div>
-        <div class="stat-card">
-          <div class="label">关联图片</div>
-          <div class="num">{{ totalImages }}</div>
-          <div class="hint">用于检索和过滤的图片数量</div>
-        </div>
-        <div class="chart-card">
-          <div class="chart-title">标签分布（示例柱状）</div>
-          <div class="chart-grid">
-            <div v-for="bar in chartBars" :key="bar.id" class="bar" :style="{ height: bar.height + 'px', background: bar.color }">
-              <span class="bar-count">{{ bar.count }}</span>
+
+        <div class="visual-row">
+          <div class="chart-card">
+            <div class="chart-head">
+              <div>
+                <div class="chart-title">标签分布</div>
+                <div class="hint">可视化浏览标签使用次数</div>
+              </div>
+              <div class="mode-switch">
+                <button :class="{ active: chartMode === 'bar' }" @click="chartMode = 'bar'">柱状图</button>
+                <button :class="{ active: chartMode === 'pie' }" @click="chartMode = 'pie'">饼图</button>
+              </div>
+            </div>
+
+            <div v-if="chartMode === 'bar'" class="chart-grid">
+              <div
+                v-for="item in chartData"
+                :key="item.id"
+                class="bar"
+                :style="{ height: (8 + (item.count || 0) / barMax * 140) + 'px', background: item.color }"
+              >
+                <span class="bar-count">{{ item.count }}</span>
+                <span class="bar-name">{{ item.name }}</span>
+              </div>
+            </div>
+
+            <div v-else class="pie-wrapper">
+              <div
+                class="pie"
+                :style="{
+                  background: 'conic-gradient(' + chartData.map((s, i) => {
+                    const total = chartData.reduce((sum, c) => sum + (c.count || 0), 0) || 1
+                    const from = chartData.slice(0, i).reduce((sum, c) => sum + (c.count || 0), 0) / total * 100
+                    const to = (chartData.slice(0, i).reduce((sum, c) => sum + (c.count || 0), 0) + (s.count || 0)) / total * 100
+                    return `${s.color} ${from}% ${to}%`
+                  }).join(', ') + ')'
+                }"
+              ></div>
+              <div class="pie-slices">
+                <div v-for="slice in chartData" :key="slice.id" class="slice-row">
+                  <span class="dot" :style="{ background: slice.color }"></span>
+                  <span class="name">{{ slice.name }}</span>
+                  <span class="pct">
+                    {{
+                      chartData.reduce((sum, c) => sum + (c.count || 0), 0)
+                        ? (((slice.count || 0) / chartData.reduce((sum, c) => sum + (c.count || 0), 0)) * 100).toFixed(1)
+                        : '0.0'
+                    }}%
+                  </span>
+                </div>
+              </div>
             </div>
           </div>
-          <div class="chart-legend">
-            <span v-for="bar in chartBars" :key="bar.id" class="legend-pill" :style="{ background: bar.color }">{{ bar.name }}</span>
-          </div>
-        </div>
-        <div class="cloud-card">
-          <div class="chart-title">词云（示意）</div>
-          <div class="cloud">
-            <span v-for="tag in wordCloud" :key="tag.id" :style="{ color: tag.color, fontSize: tag.size + 'px' }">{{ tag.name }}</span>
+
+          <div class="cloud-card">
+            <div class="chart-title">词云</div>
+            <div class="cloud">
+              <span
+                v-for="tag in wordCloud"
+                :key="tag.id"
+                :style="{ color: tag.color, fontSize: (tag.size || 16) + 'px' }"
+              >
+                {{ tag.name }}
+              </span>
+            </div>
           </div>
         </div>
       </section>
@@ -217,41 +365,65 @@ onMounted(fetchFromServer)
         <div class="table-head">
           <div class="title">标签列表</div>
           <div class="actions">
-            <input v-model="filterKeyword" placeholder="搜索标签名称…" />
+            <input v-model="filterKeyword" placeholder="搜索标签名称..." @keyup.enter="handleSearch" />
+            <button class="ghost-btn" @click="handleSearch">搜索</button>
             <button class="ghost-btn" @click="openMerge">合并</button>
+            <button class="ghost-btn danger" @click="deleteBatch">批量删除</button>
             <button class="primary-btn" @click="openCreate">新建</button>
           </div>
         </div>
 
         <div class="table">
           <div class="row header">
+            <span class="check-col">
+              <input type="checkbox" :checked="allSelected" @change="toggleSelectAll(($event.target as HTMLInputElement).checked)" />
+            </span>
             <span>标签名称</span>
             <span>颜色</span>
             <span>图片数量</span>
             <span>创建时间</span>
             <span>操作</span>
           </div>
-          <div v-for="tag in filteredTags" :key="tag.id" class="row">
+          <div v-if="!loading && listView.length === 0" class="empty-row">暂无标签，点击右上角「新建」创建吧～</div>
+          <div v-for="(tag, idx) in listView" :key="tag.id" class="row">
+            <span class="check-col">
+              <input
+                type="checkbox"
+                :checked="selectedIds.includes(tag.id)"
+                @change="toggleSelect(tag.id, ($event.target as HTMLInputElement).checked)"
+              />
+            </span>
             <span class="name">{{ tag.name }}</span>
             <span class="color-cell">
               <span class="color-dot" :style="{ background: tag.color }"></span>
               <span class="pill" :style="{ background: tag.color + '22', color: '#b05f7a' }">{{ tag.name }}</span>
             </span>
             <span>{{ tag.count }} 张</span>
-            <span class="muted">{{ tag.created_at }}</span>
+            <span class="muted">{{ formatDate(tag.created_at) }}</span>
             <span class="ops">
-              <a @click="openDrawer(tag)">查看图片</a>
+              <a @click="goTagImages(tag)">查看图片</a>
               <a @click="openEdit(tag)">编辑</a>
               <a class="danger" @click="confirmDelete(tag)">删除</a>
             </span>
           </div>
+        </div>
+
+        <div class="pager">
+          <el-pagination
+            background
+            :page-size="pageSize"
+            layout="prev, pager, next"
+            :total="total"
+            :current-page="page"
+            @current-change="handlePageChange"
+          />
         </div>
       </section>
 
       <footer>2025 Designed by hyk 用心记录每一份美好~</footer>
     </main>
 
-    <el-dialog v-model="dialogVisible" :title="dialogMode === 'create' ? '新建标签' : '编辑标签'" width="360px">
+    <el-dialog v-model="dialogVisible" :title="dialogMode === 'create' ? '新建标签' : '编辑标签'" width="380px">
       <div class="form">
         <label>名称</label>
         <el-input v-model="form.name" placeholder="请输入标签名称" />
@@ -260,22 +432,22 @@ onMounted(fetchFromServer)
       </div>
       <template #footer>
         <button class="ghost-btn" @click="dialogVisible = false">取消</button>
-        <button class="primary-btn" @click="saveTag">保存</button>
+        <button class="primary-btn" :disabled="saving" @click="saveTag">{{ saving ? '保存中...' : '保存' }}</button>
       </template>
     </el-dialog>
 
-    <el-dialog v-model="mergeDialogVisible" title="合并标签" width="420px">
+    <el-dialog v-model="mergeDialogVisible" title="合并标签" width="440px">
       <div class="merge-grid">
         <div>
           <label>来源标签（可多选）</label>
           <el-select v-model="mergeSources" multiple placeholder="选择要合并的标签">
-            <el-option v-for="tag in tags" :key="tag.id" :label="tag.name" :value="tag.id" />
+            <el-option v-for="tag in listView" :key="tag.id" :label="tag.name" :value="tag.id" />
           </el-select>
         </div>
         <div>
           <label>目标标签</label>
           <el-select v-model="mergeTarget" placeholder="选择合并到的标签">
-            <el-option v-for="tag in tags" :key="tag.id" :label="tag.name" :value="tag.id" />
+            <el-option v-for="tag in listView" :key="tag.id" :label="tag.name" :value="tag.id" />
           </el-select>
         </div>
       </div>
@@ -284,15 +456,6 @@ onMounted(fetchFromServer)
         <button class="primary-btn" @click="submitMerge">开始合并</button>
       </template>
     </el-dialog>
-
-    <el-drawer v-model="drawerVisible" :title="`包含 ${activeTag?.name || ''} 的图片`" size="40%">
-      <div v-if="activeTag" class="drawer-list">
-        <div v-if="activeTag.images.length === 0" class="muted">暂无图片</div>
-        <div v-for="imgId in activeTag.images" :key="imgId" class="thumb">
-          <div class="thumb-inner">ID {{ imgId }}</div>
-        </div>
-      </div>
-    </el-drawer>
   </div>
 </template>
 
@@ -311,28 +474,36 @@ main { flex: 1; display: flex; flex-direction: column; }
 .subtitle { font-size: 12px; color: #a36e84; }
 .right { display: flex; align-items: center; gap: 8px; }
 .welcome { font-size: 13px; color: #8c546e; }
-.primary-btn, .ghost-btn { border: none; border-radius: 999px; padding: 8px 14px; cursor: pointer; font-size: 13px; }
-.primary-btn { background: linear-gradient(135deg, #ff8bb3, #ff6fa0); color: #fff; box-shadow: 0 4px 10px rgba(255, 120, 165, 0.4); }
-.ghost-btn { background: #ffeef5; color: #b05f7a; border: 1px solid rgba(255, 180, 205, 0.7); }
-.stats-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; padding: 16px 20px 4px; }
-.stat-card, .chart-card, .cloud-card { background: rgba(255, 255, 255, 0.94); border-radius: 18px; padding: 14px 16px; box-shadow: 0 10px 22px rgba(255, 165, 199, 0.2); }
+
+.stats-panel { padding: 16px 20px 4px; display: flex; flex-direction: column; gap: 12px; }
+.stat-card { background: rgba(255, 255, 255, 0.94); border-radius: 16px; padding: 14px 16px; box-shadow: 0 10px 22px rgba(255, 165, 199, 0.2); width: 240px; }
 .stat-card .label { color: #a35d76; font-size: 12px; }
-.stat-card .num { font-size: 26px; color: #ff4c8a; font-weight: 700; }
+.stat-card .num { font-size: 28px; color: #ff4c8a; font-weight: 700; }
 .hint { color: #b6788d; font-size: 12px; }
-.chart-card { grid-column: span 2; }
-.chart-title { font-size: 13px; color: #a35d76; margin-bottom: 8px; }
-.chart-grid { display: flex; align-items: flex-end; gap: 8px; height: 160px; padding: 6px 4px; background: #fff7fb; border-radius: 14px; }
-.bar { flex: 1; border-radius: 10px 10px 4px 4px; position: relative; box-shadow: 0 6px 12px rgba(255, 168, 190, 0.35); }
+.visual-row { display: grid; grid-template-columns: 2fr 1fr; gap: 12px; }
+.chart-card, .cloud-card { background: rgba(255, 255, 255, 0.94); border-radius: 18px; padding: 14px 16px; box-shadow: 0 10px 22px rgba(255, 165, 199, 0.2); min-height: 240px; }
+.chart-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.chart-title { font-size: 14px; color: #a35d76; margin-bottom: 6px; }
+.mode-switch button { border: none; padding: 6px 10px; border-radius: 12px; background: #ffeef5; color: #b05f7a; cursor: pointer; margin-left: 6px; }
+.mode-switch button.active { background: linear-gradient(135deg, #ff8bb3, #ff6fa0); color: #fff; box-shadow: 0 4px 10px rgba(255, 120, 165, 0.35); }
+.chart-grid { display: flex; align-items: flex-end; gap: 10px; min-height: 200px; padding: 8px 10px; background: #fff7fb; border-radius: 14px; overflow-x: auto; }
+.bar { flex: 1; min-width: 60px; border-radius: 10px 10px 4px 4px; position: relative; box-shadow: 0 6px 12px rgba(255, 168, 190, 0.35); display: flex; align-items: flex-end; justify-content: center; }
 .bar-count { position: absolute; top: -18px; left: 50%; transform: translateX(-50%); font-size: 11px; color: #b05f7a; }
-.chart-legend { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-.legend-pill { padding: 4px 10px; border-radius: 999px; font-size: 12px; color: #5a2f3d; background: #ffeef5; }
-.cloud-card .cloud { display: flex; flex-wrap: wrap; gap: 10px; padding: 10px; background: #fff7fb; border-radius: 12px; min-height: 80px; }
+.bar-name { font-size: 12px; color: #5a2f3d; margin-bottom: 6px; }
+.pie-wrapper { display: grid; grid-template-columns: 1fr 1fr; align-items: center; gap: 12px; }
+.pie { width: 180px; height: 180px; border-radius: 50%; box-shadow: 0 6px 12px rgba(255, 168, 190, 0.35); background: #ffeef5; margin: 0 auto; }
+.pie-slices { display: flex; flex-direction: column; gap: 6px; }
+.slice-row { display: grid; grid-template-columns: 16px 1fr 60px; align-items: center; font-size: 13px; color: #5a2f3d; }
+.slice-row .dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+.slice-row .pct { color: #a35d76; text-align: right; }
+.cloud { display: flex; flex-wrap: wrap; gap: 10px; padding: 10px; background: #fff7fb; border-radius: 12px; min-height: 160px; }
+
 .table-card { margin: 8px 20px 10px; background: rgba(255, 255, 255, 0.95); border-radius: 18px; box-shadow: 0 12px 24px rgba(255, 165, 199, 0.3); padding: 12px 12px 4px; }
-.table-head { display: flex; justify-content: space-between; align-items: center; padding: 0 6px 6px; }
+.table-head { display: flex; justify-content: space-between; align-items: center; padding: 0 6px 6px; gap: 10px; flex-wrap: wrap; }
 .table-head .title { font-weight: 600; color: #ff4c8a; }
-.table-head input { border-radius: 12px; border: 1px solid rgba(255, 190, 210, 0.8); padding: 6px 10px; font-size: 13px; outline: none; }
+.table-head input { border-radius: 12px; border: 1px solid rgba(255, 190, 210, 0.8); padding: 6px 10px; font-size: 13px; outline: none; min-width: 180px; }
 .table { width: 100%; }
-.row { display: grid; grid-template-columns: 1.2fr 1fr 1fr 1fr 1fr; align-items: center; padding: 10px 8px; border-bottom: 1px solid #ffe6ef; font-size: 13px; }
+.row { display: grid; grid-template-columns: 60px 1.5fr 1fr 1fr 1fr 1fr; align-items: center; padding: 10px 8px; border-bottom: 1px solid #ffe6ef; font-size: 13px; }
 .row.header { font-weight: 600; color: #8c546e; background: #fff7fb; border-radius: 12px; }
 .name { color: #613448; }
 .color-cell { display: flex; align-items: center; gap: 8px; }
@@ -341,11 +512,17 @@ main { flex: 1; display: flex; flex-direction: column; }
 .ops a { margin-right: 8px; color: #ff4c8a; cursor: pointer; }
 .ops a.danger { color: #d95959; }
 .muted { color: #b57a90; }
+.check-col { display: flex; justify-content: center; }
+.empty-row { padding: 18px; color: #b6788d; text-align: center; }
+.pager { padding: 10px 8px; display: flex; justify-content: flex-end; }
+
 footer { text-align: center; font-size: 12px; color: #b57a90; padding: 10px 0 16px; }
 .form label { display: block; font-size: 12px; color: #a35d76; margin: 6px 0 2px; }
 .merge-grid { display: flex; flex-direction: column; gap: 12px; }
-.drawer-list { display: flex; flex-wrap: wrap; gap: 10px; }
-.thumb { width: 80px; height: 80px; border-radius: 12px; background: #ffeef5; display: flex; align-items: center; justify-content: center; color: #a35d76; }
-@media (max-width: 1200px) { .stats-row { grid-template-columns: repeat(2, 1fr); } .chart-card { grid-column: span 2; } }
-@media (max-width: 900px) { .sidebar { display: none; } .stats-row { grid-template-columns: 1fr; } .row { grid-template-columns: 1fr 1fr 1fr 1fr; grid-auto-rows: auto; } }
+.primary-btn, .ghost-btn { border: none; border-radius: 999px; padding: 8px 14px; cursor: pointer; font-size: 13px; }
+.primary-btn { background: linear-gradient(135deg, #ff8bb3, #ff6fa0); color: #fff; box-shadow: 0 4px 10px rgba(255, 120, 165, 0.4); }
+.ghost-btn { background: #ffeef5; color: #b05f7a; border: 1px solid rgba(255, 180, 205, 0.7); }
+.ghost-btn.danger { color: #d95959; border-color: #f4a6a6; }
+@media (max-width: 1200px) { .visual-row { grid-template-columns: 1fr; } .row { grid-template-columns: 50px 1fr 1fr 1fr 1fr 1fr; } }
+@media (max-width: 900px) { .sidebar { display: none; } .row { grid-template-columns: 40px 1fr 1fr 1fr; grid-auto-rows: auto; } .chart-head { flex-direction: column; align-items: flex-start; } }
 </style>

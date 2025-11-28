@@ -1,9 +1,10 @@
 import io
 import os
+import re
 import shutil
 import uuid
 import json
-from datetime import datetime, date
+from datetime import datetime, date, time
 from fractions import Fraction
 from typing import List
 
@@ -32,23 +33,6 @@ def _ensure_user_dirs(user_id: int) -> None:
     os.makedirs(os.path.join(current_app.config["THUMB_DIR"], f"user_{user_id}"), exist_ok=True)
 
 
-def _gps_to_decimal(gps_info) -> tuple[float | None, float | None]:
-    def _conv(val):
-        d, m, s = [Fraction(x[0], x[1]) for x in val]
-        return float(d + m / 60 + s / 3600)
-
-    try:
-        lat = _conv(gps_info[2])
-        if gps_info[1] in ["S", "s"]:
-            lat = -lat
-        lon = _conv(gps_info[4])
-        if gps_info[3] in ["W", "w"]:
-            lon = -lon
-        return lat, lon
-    except Exception:
-        return None, None
-
-
 def _tag_name(tag_id) -> str:
     if isinstance(tag_id, int):
         return ExifTags.TAGS.get(tag_id, f"Tag_{tag_id}")
@@ -69,36 +53,32 @@ def _format_exif_value(val):
         return str(val)
 
 
-def _format_fraction(val) -> Fraction | None:
+def _to_fraction(val) -> Fraction | None:
     try:
         if isinstance(val, Fraction):
             return val
-        if isinstance(val, tuple) and len(val) == 2 and val[1]:
+        if hasattr(val, "numerator") and hasattr(val, "denominator"):
+            return Fraction(val.numerator, val.denominator)
+        if isinstance(val, (tuple, list)) and len(val) == 2 and val[1]:
             return Fraction(val[0], val[1])
+        if isinstance(val, (int, float)):
+            return Fraction(val).limit_denominator()
         if isinstance(val, str):
             txt = val.strip()
             if "/" in txt:
                 a, b = txt.split("/", 1)
                 return Fraction(float(a), float(b))
             return Fraction(txt).limit_denominator()
-        if isinstance(val, (int, float)):
-            return Fraction(val).limit_denominator()
     except Exception:
         return None
     return None
 
 
-def _to_float(val) -> float | None:
-    frac = _format_fraction(val)
-    if frac is not None:
-        try:
-            return float(frac)
-        except Exception:
-            return None
-    try:
-        return float(val)
-    except Exception:
+def _format_fraction(val) -> Fraction | None:
+    frac = _to_fraction(val)
+    if frac is None:
         return None
+    return frac
 
 
 def _friendly_exposure(val) -> str:
@@ -113,14 +93,36 @@ def _friendly_exposure(val) -> str:
 
 
 def _friendly_aperture(val) -> str:
-    num = _to_float(val)
+    num = None
+    frac = _format_fraction(val)
+    if frac is not None:
+        try:
+            num = float(frac)
+        except Exception:
+            num = None
+    if num is None:
+        try:
+            num = float(val)
+        except Exception:
+            num = None
     if num:
         return f"f/{num:.1f}".rstrip("0").rstrip(".")
     return _format_exif_value(val) if val is not None else ""
 
 
 def _friendly_focal(val) -> str:
-    num = _to_float(val)
+    num = None
+    frac = _format_fraction(val)
+    if frac is not None:
+        try:
+            num = float(frac)
+        except Exception:
+            num = None
+    if num is None:
+        try:
+            num = float(val)
+        except Exception:
+            num = None
     if num:
         return f"{num:.1f} mm".rstrip("0").rstrip(".")
     return _format_exif_value(val) if val is not None else ""
@@ -130,9 +132,14 @@ def _format_lens_spec(val) -> str:
     if isinstance(val, (list, tuple)):
         nums = []
         for item in val:
-            num = _to_float(item)
-            if num:
-                nums.append(num)
+            frac = _format_fraction(item)
+            if frac is not None:
+                nums.append(float(frac))
+            else:
+                try:
+                    nums.append(float(item))
+                except Exception:
+                    continue
         nums = [n for n in nums if n > 0]
         if not nums:
             return ""
@@ -149,6 +156,76 @@ def _format_lens_spec(val) -> str:
     return _format_exif_value(val) if val is not None else ""
 
 
+def _dms_to_deg(val) -> float | None:
+    if val is None:
+        return None
+    if isinstance(val, (int, float, Fraction)):
+        try:
+            return float(val)
+        except Exception:
+            return None
+    if hasattr(val, "numerator") and hasattr(val, "denominator"):
+        try:
+            return float(Fraction(val.numerator, val.denominator))
+        except Exception:
+            return None
+    if isinstance(val, (list, tuple)):
+        parts = list(val)
+        if len(parts) == 3:
+            fracs = [_format_fraction(p) for p in parts]
+            if any(f is None for f in fracs):
+                return None
+            deg = fracs[0] + fracs[1] / 60 + fracs[2] / 3600
+            try:
+                return float(deg)
+            except Exception:
+                return None
+        if len(parts) == 2:
+            fracs = [_format_fraction(p) for p in parts]
+            if any(f is None for f in fracs):
+                return None
+            try:
+                return float(fracs[0] + fracs[1] / 60)
+            except Exception:
+                return None
+    try:
+        return float(val)
+    except Exception:
+        return None
+
+
+def _normalize_gps_dict(gps_info) -> dict:
+    if not isinstance(gps_info, dict):
+        return {}
+    norm = {}
+    for k, v in gps_info.items():
+        name = ExifTags.GPSTAGS.get(k, k) if isinstance(k, int) else str(k)
+        norm[name] = v
+    return norm
+
+
+def _gps_to_decimal(gps_info) -> tuple[float | None, float | None]:
+    try:
+        norm = _normalize_gps_dict(gps_info)
+        lat_raw = norm.get("GPSLatitude") or norm.get("Latitude")
+        lon_raw = norm.get("GPSLongitude") or norm.get("Longitude")
+        lat_ref = norm.get("GPSLatitudeRef") or norm.get("LatitudeRef")
+        lon_ref = norm.get("GPSLongitudeRef") or norm.get("LongitudeRef")
+        if lat_raw is None or lon_raw is None:
+            return None, None
+        lat = _dms_to_deg(lat_raw)
+        lon = _dms_to_deg(lon_raw)
+        if lat is None or lon is None:
+            return None, None
+        if str(lat_ref or "").upper().startswith("S"):
+            lat = -abs(lat)
+        if str(lon_ref or "").upper().startswith("W"):
+            lon = -abs(lon)
+        return lat, lon
+    except Exception:
+        return None, None
+
+
 def _format_location(lat: float | None, lon: float | None) -> str:
     if lat is None or lon is None:
         return ""
@@ -156,6 +233,41 @@ def _format_location(lat: float | None, lon: float | None) -> str:
         return f"{lat:.6f}, {lon:.6f}"
     except Exception:
         return ""
+
+
+def _parse_iso6709(text: str) -> tuple[float | None, float | None]:
+    try:
+        tokens = re.findall(r"[+-]\d+(?:\.\d+)?", text)
+        if len(tokens) >= 2:
+            return float(tokens[0]), float(tokens[1])
+    except Exception:
+        return None, None
+    return None, None
+
+
+def _parse_xmp_location(xmp_bytes: bytes | str | None) -> tuple[float | None, float | None]:
+    if not xmp_bytes:
+        return None, None
+    try:
+        txt = xmp_bytes.decode("utf-8", errors="ignore") if isinstance(xmp_bytes, (bytes, bytearray)) else str(xmp_bytes)
+    except Exception:
+        txt = str(xmp_bytes)
+    lat = lon = None
+    try:
+        lat_match = re.search(r"GPSLatitude[^0-9+.-]*([+-]?\d+(?:\.\d+)?)", txt)
+        lon_match = re.search(r"GPSLongitude[^0-9+.-]*([+-]?\d+(?:\.\d+)?)", txt)
+        if lat_match and lon_match:
+            lat = float(lat_match.group(1))
+            lon = float(lon_match.group(1))
+    except Exception:
+        pass
+    if (lat is None or lon is None) and "ISO6709" in txt:
+        iso_match = re.search(r"ISO6709[^<>\n]*([+-]\d+(?:\.\d+)?[+-]\d+(?:\.\d+)?(?:[+-]\d+(?:\.\d+)?/?)?)", txt)
+        if iso_match:
+            lat_iso, lon_iso = _parse_iso6709(iso_match.group(1))
+            lat = lat if lat is not None else lat_iso
+            lon = lon if lon is not None else lon_iso
+    return lat, lon
 
 
 def _parse_taken_at(raw: str | None):
@@ -221,28 +333,31 @@ def _collect_exif_sources(pil_img: PILImage.Image, exif_bytes: bytes | None) -> 
     return merged, raw_map
 
 
-def _load_heif_with_exif(raw_bytes: bytes) -> tuple[PILImage.Image | None, bytes | None]:
-    """读取 HEIF，返回 PIL Image 和 EXIF 二进制"""
+def _load_heif_with_exif(raw_bytes: bytes) -> tuple[PILImage.Image | None, bytes | None, bytes | None]:
+    """读取 HEIF，返回 PIL Image、EXIF 二进制、XMP 二进制"""
     try:
         heif = read_heif(raw_bytes)
     except Exception:
-        return None, None
+        return None, None, None
     exif_bytes = None
+    xmp_bytes = None
     for meta in heif.metadata or []:
         if meta.get("type") == "Exif":
             exif_bytes = meta.get("data")
-            break
+        elif meta.get("type") == "XMP":
+            xmp_bytes = meta.get("data")
     try:
         img = PILImage.frombytes(heif.mode or "RGB", heif.size, heif.data, "raw")
     except Exception:
         img = None
-    return img, exif_bytes
+    return img, exif_bytes, xmp_bytes
 
 
-def _extract_exif(pil_img: PILImage.Image, exif_bytes: bytes | None = None) -> dict:
+def _extract_exif(pil_img: PILImage.Image, exif_bytes: bytes | None = None, xmp_bytes: bytes | None = None) -> dict:
     exif: dict = {}
     width, height = pil_img.size
     raw_map: dict = {}
+    lat = lon = None
     try:
         tags, raw_map = _collect_exif_sources(pil_img, exif_bytes)
 
@@ -269,12 +384,30 @@ def _extract_exif(pil_img: PILImage.Image, exif_bytes: bytes | None = None) -> d
 
         gps_info = tags.get("GPSInfo") or tags.get("GPS")
         exif["gps"] = gps_info
+        if gps_info:
+            lat, lon = _gps_to_decimal(gps_info)
+
+        if (lat is None or lon is None) and xmp_bytes:
+            lat_xmp, lon_xmp = _parse_xmp_location(xmp_bytes)
+            if lat_xmp is not None and lon_xmp is not None:
+                lat, lon = lat_xmp, lon_xmp
+                raw_map["XMP_Latitude"] = f"{lat:.6f}"
+                raw_map["XMP_Longitude"] = f"{lon:.6f}"
+
+        exif["latitude"] = lat
+        exif["longitude"] = lon
+
         exif["resolution"] = f"{width}x{height}" if width and height else ""
         exif["software"] = tags.get("Software") or ""
         exif["make"] = tags.get("Make") or ""
         exif["model"] = tags.get("Model") or ""
         exif["orientation"] = tags.get("Orientation") or ""
         exif["datetime_digitized"] = tags.get("DateTimeDigitized") or tags.get("DateTime") or ""
+
+        if lat is not None and lon is not None:
+            raw_map["Latitude"] = f"{lat:.6f}"
+            raw_map["Longitude"] = f"{lon:.6f}"
+            raw_map["Location"] = _format_location(lat, lon)
 
         if isinstance(gps_info, dict):
             for k, v in gps_info.items():
@@ -359,6 +492,37 @@ def _normalize_rel_path(path: str | None) -> str | None:
     return cleaned
 
 
+def _image_file_exists(img: Image) -> bool:
+    rel = _normalize_rel_path(img.filename)
+    if not rel:
+        return False
+    disk_path = os.path.join(current_app.config["UPLOAD_DIR"], rel)
+    return os.path.exists(disk_path)
+
+
+def _filter_existing(images: list[Image]) -> list[Image]:
+    """过滤磁盘缺失的图片；若缺失且未标记删除，则软删除以避免重复 404。"""
+    kept: list[Image] = []
+    missing = 0
+    dirty = False
+    for img in images:
+        if _image_file_exists(img):
+            kept.append(img)
+            continue
+        missing += 1
+        if img.deleted_at is None:
+            img.deleted_at = datetime.utcnow()
+            dirty = True
+    if dirty:
+        try:
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+    if missing and kept:
+        current_app.logger.info("filtered missing files: %s (kept %s)", missing, len(kept))
+    return kept
+
+
 def _build_display_exif(img: Image, exif_raw: dict) -> list[dict]:
     def pick(*keys):
         for k in keys:
@@ -371,7 +535,7 @@ def _build_display_exif(img: Image, exif_raw: dict) -> list[dict]:
         pick("TakenAt", "DateTimeOriginal", "DateTime")
     )
     resolution = f"{img.width} x {img.height}" if img.width and img.height else pick("Resolution", "ImageWidth")
-    location_str = _format_location(img.latitude, img.longitude)
+    location_str = _format_location(img.latitude, img.longitude) or pick("Location")
 
     items = [
         {"key": "camera", "label": "相机", "value": img.camera or pick("Camera", "Model", "Make")},
@@ -687,14 +851,16 @@ def upload():
 
             exif = {}
             width = height = 0
+            xmp_bytes = None
 
             if is_heic:
                 raw_bytes = f.stream.read()
                 exif_bytes = None
                 pil_img = None
                 try:
-                    heif_img, heif_exif = _load_heif_with_exif(raw_bytes)
+                    heif_img, heif_exif, heif_xmp = _load_heif_with_exif(raw_bytes)
                     exif_bytes = heif_exif or exif_bytes
+                    xmp_bytes = heif_xmp or xmp_bytes
                     pil_img = heif_img
                 except Exception:
                     pil_img = None
@@ -702,13 +868,14 @@ def upload():
                     with PILImage.open(io.BytesIO(raw_bytes)) as probe:
                         pil_img = pil_img or probe.copy()
                         exif_bytes = exif_bytes or probe.info.get("exif")
+                    xmp_bytes = xmp_bytes or None
                 except Exception:
                     pil_img = pil_img or None
                 if pil_img is None:
                     pil_img = PILImage.open(io.BytesIO(raw_bytes))
                 pil_img = ImageOps.exif_transpose(pil_img)
                 width, height = pil_img.size
-                exif = _extract_exif(pil_img, exif_bytes)
+                exif = _extract_exif(pil_img, exif_bytes, xmp_bytes)
                 save_kwargs = {"format": "JPEG", "quality": 95}
                 if exif_bytes:
                     save_kwargs["exif"] = exif_bytes
@@ -725,8 +892,9 @@ def upload():
                         save_kwargs["exif"] = img.info["exif"]
                     img.save(disk_path, **save_kwargs)
 
-            lat = lon = None
-            if exif.get("gps"):
+            lat = exif.get("latitude")
+            lon = exif.get("longitude")
+            if (lat is None or lon is None) and exif.get("gps"):
                 lat, lon = _gps_to_decimal(exif["gps"])
 
             thumb_rel = _normalize_rel_path(os.path.join(f"user_{user_id}", f"{file_token}_thumb.jpg"))
@@ -758,6 +926,7 @@ def upload():
                 exif_json=json.dumps(exif.get("raw") or {}),
                 thumb_path=thumb_rel,
                 visibility="public" if visibility == "public" else "private",
+                is_featured=False,
                 folder=folder,
             )
             image_row.tags = _get_or_create_tags(tag_names, user_id=user_id)
@@ -779,19 +948,26 @@ def list_images():
     page = _positive_int(request.args.get("page"), 1)
     page_size = _positive_int(request.args.get("page_size"), 12, 50)
     sort = request.args.get("sort", "newest")
+    featured_flag = request.args.get("featured")
 
     query = _query_user_images(user_id, include_deleted=False)
     folder = request.args.get("folder")
     if folder:
         query = query.filter(Image.folder == folder)
+    if featured_flag is not None:
+        want_featured = str(featured_flag).lower() in ("1", "true", "yes", "on")
+        query = query.filter(Image.is_featured.is_(want_featured))
 
     order_by = Image.created_at.asc() if sort == "oldest" else Image.created_at.desc()
     pagination = query.order_by(order_by).paginate(page=page, per_page=page_size, error_out=False)
+    items = _filter_existing(list(pagination.items))
+    missing_count = len(pagination.items) - len(items)
+    total_adjusted = max(0, (pagination.total or 0) - missing_count)
 
     return jsonify(
         {
-            "items": [_serialize_image(img) for img in pagination.items],
-            "total": pagination.total,
+            "items": [_serialize_image(img) for img in items],
+            "total": total_adjusted,
             "page": page,
             "page_size": page_size,
         }
@@ -814,6 +990,7 @@ def search_images():
     uploaded_end = _parse_date_param("uploaded_end", end_of_day=True)
     size_min_mb = request.args.get("size_min_mb")
     size_max_mb = request.args.get("size_max_mb")
+    featured_flag = request.args.get("featured")
 
     exif_map = {
         "camera": Image.camera,
@@ -846,6 +1023,10 @@ def search_images():
             conds.append(func.lower(Image.original_name).like(f"%.{fmt}"))
             conds.append(func.lower(Image.mime_type).like(f"%{fmt}%"))
         query = query.filter(or_(*conds))
+
+    if featured_flag is not None:
+        want_featured = str(featured_flag).lower() in ("1", "true", "yes", "on")
+        query = query.filter(Image.is_featured.is_(want_featured))
 
     if captured_start:
         query = query.filter(Image.taken_at.isnot(None), Image.taken_at >= captured_start)
@@ -902,10 +1083,14 @@ def search_images():
         query = query.outerjoin(tag_count_subq, Image.id == tag_count_subq.c.image_id).order_by(order_clause)
 
     pagination = query.paginate(page=page, per_page=page_size, error_out=False)
+    items = _filter_existing(list(pagination.items))
+    missing_count = len(pagination.items) - len(items)
+    total_adjusted = max(0, (pagination.total or 0) - missing_count)
+
     return jsonify(
         {
-            "items": [_serialize_image(img) for img in pagination.items],
-            "total": pagination.total,
+            "items": [_serialize_image(img) for img in items],
+            "total": total_adjusted,
             "page": page,
             "page_size": page_size,
         }
@@ -916,15 +1101,30 @@ def search_images():
 def image_stats():
     user_id = _current_user_id()
     today = date.today()
+    today_start = datetime.combine(today, time.min)
+    today_end = datetime.combine(today, time.max)
+
     today_deleted = (
         _query_user_images(user_id, include_deleted=True)
         .filter(Image.deleted_at.isnot(None))
         .filter(db.func.date(Image.deleted_at) == today)
         .count()
     )
+    today_uploaded = (
+        _query_user_images(user_id, include_deleted=True)
+        .filter(Image.created_at >= today_start, Image.created_at <= today_end)
+        .count()
+    )
     total_active = _query_user_images(user_id, include_deleted=False).count()
     recycle_count = _query_user_images(user_id, include_deleted=True).filter(Image.deleted_at.isnot(None)).count()
-    return jsonify({"today_deleted": today_deleted, "total_active": total_active, "recycle_count": recycle_count})
+    return jsonify(
+        {
+            "today_deleted": today_deleted,
+            "today_uploaded": today_uploaded,
+            "total_active": total_active,
+            "recycle_count": recycle_count,
+        }
+    )
 
 
 @images_bp.get("/recycle")
@@ -1080,12 +1280,16 @@ def update_meta(image_id: int):
     description = (data.get("description") or "").strip()
     visibility = (data.get("visibility") or img.visibility).strip()
     folder = (data.get("folder") or img.folder or "默认图库").strip() or "默认图库"
+    is_featured = data.get("is_featured")
 
     if name:
         img.name = name
     img.description = description or None
     img.visibility = "public" if visibility == "public" else "private"
     img.folder = folder
+    if is_featured is not None:
+        img.is_featured = bool(is_featured)
+
     db.session.commit()
     return jsonify({"message": "ok", "item": _serialize_image(img)})
 

@@ -42,6 +42,7 @@ const thumbUrl = computed(() =>
 const heroUrl = computed(() => imageUrl.value || thumbUrl.value)
 const customTags = computed(() => detail.value?.tag_objects || [])
 const exifRaw = computed(() => detail.value?.exif_raw || {})
+const isFeatured = computed(() => !!detail.value?.is_featured)
 
 const exifDisplay = computed(() => {
   const fromApi = detail.value?.exif_display
@@ -49,6 +50,13 @@ const exifDisplay = computed(() => {
     return fromApi.map((i: any) => ({ ...i, value: i.value || '--' }))
   }
   const d = detail.value || {}
+  const locationValue = (() => {
+    if (d.latitude != null && d.longitude != null) return `${d.latitude}, ${d.longitude}`
+    const raw = exifRaw.value || {}
+    if (raw.Location) return raw.Location
+    if (raw.Latitude && raw.Longitude) return `${raw.Latitude}, ${raw.Longitude}`
+    return '--'
+  })()
   return [
     { key: 'camera', label: '相机', value: d.camera || '--' },
     { key: 'lens', label: '镜头', value: d.lens || '--' },
@@ -58,7 +66,7 @@ const exifDisplay = computed(() => {
     { key: 'focal', label: '焦距', value: d.focal || '--' },
     { key: 'resolution', label: '分辨率', value: d.width && d.height ? `${d.width} x ${d.height}` : '--' },
     { key: 'taken_at', label: '拍摄时间', value: d.taken_at || '--' },
-    { key: 'location', label: '拍摄地点', value: d.latitude && d.longitude ? `${d.latitude}, ${d.longitude}` : '--' },
+    { key: 'location', label: '拍摄地点', value: locationValue },
     { key: 'software', label: '软件', value: (exifRaw.value || {}).Software || '--' },
   ]
 })
@@ -78,7 +86,7 @@ const links = [
   { label: '文件夹', icon: '📁', path: '/folders' },
   { label: '相册', icon: '📚', path: '/albums' },
   { label: '智能分类', icon: '🧠', path: '/smart' },
-  { label: 'AI 工作流', icon: '🤖', path: '/ai' },
+  { label: 'AI 工作台', icon: '🤖', path: '/ai' },
   { label: '任务中心', icon: '🧾', path: '/tasks' },
   { label: '回收站', icon: '🗑️', path: '/recycle' },
   { label: '设置', icon: '⚙️', path: '/settings' },
@@ -171,7 +179,7 @@ function generateAiTags() {
   setTimeout(() => {
     const base = ['风景', '人物', '动物', '海洋', '城市', '夜景', '花卉', '旅行', '日常']
     aiTags.value = base.sort(() => 0.5 - Math.random()).slice(0, 3)
-    aiDescription.value = 'AI 生成：根据图像内容给出的标签与简短描述，后端接入模型后可替换为真实结果。'
+    aiDescription.value = 'AI 生成：根据图像内容给出的标签与简短描述，后端接入模型后可替换为真实结果～'
     aiLoading.value = false
   }, 800)
 }
@@ -191,6 +199,18 @@ async function saveMeta() {
     ElMessage.error(err?.response?.data?.message || '保存失败')
   } finally {
     savingMeta.value = false
+  }
+}
+
+async function toggleFeatured() {
+  if (!detail.value) return
+  try {
+    const target = !detail.value.is_featured
+    const res = await axios.patch(`/api/v1/images/${route.params.id}/meta`, { is_featured: target })
+    detail.value = res.data.item
+    ElMessage.success(target ? '已设为精选图片' : '已取消精选')
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.message || '操作失败')
   }
 }
 
@@ -280,7 +300,7 @@ onMounted(fetchDetail)
                 <p>随时随地 · 图片详情</p>
               </div>
             </div>
-            <button class="icon-btn ghost" @click="closeNav">✕</button>
+            <button class="icon-btn ghost" @click="closeNav">×</button>
           </div>
           <nav>
             <a v-for="item in links" :key="item.path" :class="{ active: isActive(item.path) }" @click="go(item.path)">
@@ -298,6 +318,7 @@ onMounted(fetchDetail)
             <span>{{ formatSize(detail.size) }}</span>
             <span>{{ detail.width }} × {{ detail.height }}</span>
             <span>{{ detail.visibility === 'public' ? '公开' : '私密' }}</span>
+            <span v-if="isFeatured" class="featured-chip">精选</span>
           </div>
         </div>
 
@@ -373,6 +394,7 @@ onMounted(fetchDetail)
 
             <div class="meta-actions">
               <button class="pill-btn" :disabled="savingMeta" @click="saveMeta">保存标题与描述</button>
+              <button class="pill-btn ghost" @click="toggleFeatured">{{ isFeatured ? '取消精选' : '设为精选' }}</button>
             </div>
           </div>
 
@@ -400,13 +422,22 @@ onMounted(fetchDetail)
   <div v-else class="loading">加载中...</div>
 </template>
 
+
 <style scoped>
 .dashboard { display: flex; min-height: 100vh; background: linear-gradient(135deg, #ffeef5, #ffe5f0); color: #4b4b4b; }
+
 .sidebar { width: 240px; background: linear-gradient(180deg, #fff7fb, #ffeef5); border-right: 1px solid rgba(255, 190, 210, 0.6); padding: 20px; position: sticky; top: 0; height: 100vh; }
 .logo { display: flex; gap: 10px; margin-bottom: 20px; }
 .logo .icon { background: linear-gradient(135deg, #ff8bb3, #ff6fa0); width: 36px; height: 36px; border-radius: 10px; color: #fff; display: flex; align-items: center; justify-content: center; }
 .logo h1 { font-size: 18px; color: #ff4c8a; margin: 0; }
 .logo p { font-size: 11px; color: #b6788d; margin: 0; }
+.featured-chip {
+  background: linear-gradient(135deg, #ff8bb3, #ff6fa0);
+  color: #fff;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+}
 nav a { display: block; padding: 9px 12px; border-radius: 12px; font-size: 14px; color: #6b3c4a; margin: 4px 0; cursor: pointer; }
 nav a.active, nav a:hover { background: rgba(255, 153, 187, 0.16); color: #ff4c8a; }
 main { flex: 1; display: flex; flex-direction: column; }

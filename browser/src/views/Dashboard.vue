@@ -25,9 +25,11 @@ const pageSize = ref(12)
 const isBatchMode = ref(false)
 const selectedIds = ref<number[]>([])
 const images = ref<GalleryImage[]>([])
+const featuredImages = ref<GalleryImage[]>([])
 const total = ref(0)
 const loading = ref(false)
 const todayDeleted = ref(0)
+const todayUploaded = ref(0)
 const navOpen = ref(false)
 
 const apiBase = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '')
@@ -45,7 +47,7 @@ const links = [
   { label: '文件夹', icon: '📁', path: '/folders' },
   { label: '相册', icon: '📚', path: '/albums' },
   { label: '智能分类', icon: '🧠', path: '/smart' },
-  { label: 'AI 工作流', icon: '🤖', path: '/ai' },
+  { label: 'AI 工作台', icon: '🤖', path: '/ai' },
   { label: '任务中心', icon: '🧾', path: '/tasks' },
   { label: '回收站', icon: '🗑️', path: '/recycle' },
   { label: '设置', icon: '⚙️', path: '/settings' },
@@ -75,20 +77,23 @@ function fallbackToRaw(event: Event, url: string) {
   if (img && img.src !== url) img.src = url
 }
 
+function mapImage(item: any): GalleryImage {
+  const tokenParam = authStore.token ? `?jwt=${authStore.token}` : ''
+  return {
+    ...item,
+    thumbUrl: withBase((item.thumb_url || `/api/v1/images/${item.id}/thumb`) + tokenParam),
+    fullUrl: withBase((item.raw_url || `/api/v1/images/${item.id}/raw`) + tokenParam),
+    displayName: item.name || item.original_name,
+  }
+}
+
 async function fetchImages() {
   loading.value = true
   try {
     const res = await axios.get('/api/v1/images', {
       params: { page: currentPage.value, page_size: pageSize.value, sort: sortOrder.value },
     })
-    const tokenParam = authStore.token ? `?jwt=${authStore.token}` : ''
-
-    images.value = (res.data.items || []).map((item: any) => ({
-      ...item,
-      thumbUrl: withBase((item.thumb_url || `/api/v1/images/${item.id}/thumb`) + tokenParam),
-      fullUrl: withBase((item.raw_url || `/api/v1/images/${item.id}/raw`) + tokenParam),
-      displayName: item.name || item.original_name,
-    }))
+    images.value = (res.data.items || []).map(mapImage)
     total.value = res.data.total || 0
   } catch (error: any) {
     ElMessage.error(error?.response?.data?.message || '获取图片失败')
@@ -97,10 +102,21 @@ async function fetchImages() {
   }
 }
 
+async function fetchFeatured() {
+  try {
+    const res = await axios.get('/api/v1/images', { params: { featured: 1, page: 1, page_size: 12, sort: 'newest' } })
+    featuredImages.value = (res.data.items || []).map(mapImage)
+  } catch {
+    featuredImages.value = []
+  }
+}
+
 async function fetchStats() {
   try {
     const res = await axios.get('/api/v1/images/stats')
     todayDeleted.value = res.data.today_deleted || 0
+    todayUploaded.value = res.data.today_uploaded || 0
+    total.value = res.data.total_active ?? total.value
   } catch {
     /* ignore */
   }
@@ -109,6 +125,7 @@ async function fetchStats() {
 onMounted(() => {
   if (authStore.token) {
     fetchImages()
+    fetchFeatured()
     fetchStats()
   }
 })
@@ -118,8 +135,12 @@ watch(
     currentPage.value = 1
     if (token) {
       fetchImages()
+      fetchFeatured()
       fetchStats()
-    } else images.value = []
+    } else {
+      images.value = []
+      featuredImages.value = []
+    }
   }
 )
 
@@ -180,8 +201,19 @@ async function batchTrash() {
   }
 }
 
-/* 轮播逻辑 */
-const sliderImages = computed(() => images.value.slice(0, 8))
+/* 轮播逻辑：精选优先，不足 4 张时用首页前 8 张补足 */
+const sliderImages = computed(() => {
+  const maxSlides = 8
+  const minSlides = 4
+  const merged: Map<number, GalleryImage> = new Map()
+  for (const item of featuredImages.value) merged.set(item.id, item)
+  for (const item of images.value.slice(0, 8)) {
+    if (!merged.has(item.id)) merged.set(item.id, item)
+  }
+  const arr = Array.from(merged.values())
+  if (arr.length >= minSlides) return arr.slice(0, Math.min(maxSlides, arr.length))
+  return arr
+})
 const currentSlide = ref(0)
 const sliderTimer = ref<number | null>(null)
 const hasSlider = computed(() => sliderImages.value.length > 0)
@@ -268,7 +300,7 @@ onUnmounted(stopSlider)
                 <p>记录美好 · 随时随地</p>
               </div>
             </div>
-            <button class="icon-btn ghost" @click="closeNav">✕</button>
+            <button class="icon-btn ghost" @click="closeNav">×</button>
           </div>
           <nav>
             <a v-for="item in links" :key="item.path" :class="{ active: isActive(item.path) }" @click="go(item.path)">
@@ -285,7 +317,7 @@ onUnmounted(stopSlider)
           <p>这里是你的专属回忆小宇宙，生活里的每一朵花、每一片天空、每一场落日，都值得被认真记录～</p>
           <div class="stats">
             <div><b>{{ total }}</b><span>图片总数</span></div>
-            <div><b>1</b><span>今日上传</span></div>
+            <div><b>{{ todayUploaded }}</b><span>今日上传</span></div>
             <div><b>{{ tasksCount }}</b><span>今日删除</span></div>
           </div>
         </div>
@@ -299,8 +331,8 @@ onUnmounted(stopSlider)
         <div class="carousel-head">
           <div class="carousel-title">精选轮播</div>
           <div class="carousel-actions">
-            <button class="pill ghost" @click="prevSlide">‹</button>
-            <button class="pill ghost" @click="nextSlide">›</button>
+            <button class="pill ghost" @click="prevSlide">←</button>
+            <button class="pill ghost" @click="nextSlide">→</button>
           </div>
         </div>
         <div class="carousel-window">

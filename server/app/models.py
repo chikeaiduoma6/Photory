@@ -99,6 +99,7 @@ class Image(db.Model):
     exif_json = db.Column(db.Text, nullable=True)
     thumb_path = db.Column(db.String(255), nullable=True)
     visibility = db.Column(db.String(16), default="private", nullable=False)
+    is_featured = db.Column(db.Boolean, default=False, nullable=False)
     folder = db.Column(db.String(128), default="默认图库", nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
@@ -132,6 +133,7 @@ class Image(db.Model):
             "exif_json": self.exif_json,
             "thumb_path": self.thumb_path,
             "visibility": self.visibility,
+            "is_featured": self.is_featured,
             "folder": self.folder or "默认图库",
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),

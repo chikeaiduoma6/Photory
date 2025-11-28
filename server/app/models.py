@@ -80,6 +80,7 @@ class Image(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
     name = db.Column(db.String(255), nullable=False)
+    description = db.Column(db.Text, nullable=True)
     filename = db.Column(db.String(255), nullable=False)
     original_name = db.Column(db.String(255), nullable=False)
     mime_type = db.Column(db.String(64), nullable=False)
@@ -95,6 +96,7 @@ class Image(db.Model):
     focal = db.Column(db.String(32), nullable=True)
     latitude = db.Column(db.Float, nullable=True)
     longitude = db.Column(db.Float, nullable=True)
+    exif_json = db.Column(db.Text, nullable=True)
     thumb_path = db.Column(db.String(255), nullable=True)
     visibility = db.Column(db.String(16), default="private", nullable=False)
     folder = db.Column(db.String(128), default="默认图库", nullable=True)
@@ -111,6 +113,7 @@ class Image(db.Model):
             "id": self.id,
             "user_id": self.user_id,
             "name": self.name,
+            "description": self.description,
             "filename": self.filename,
             "original_name": self.original_name,
             "mime_type": self.mime_type,
@@ -126,6 +129,7 @@ class Image(db.Model):
             "focal": self.focal,
             "latitude": self.latitude,
             "longitude": self.longitude,
+            "exif_json": self.exif_json,
             "thumb_path": self.thumb_path,
             "visibility": self.visibility,
             "folder": self.folder or "默认图库",

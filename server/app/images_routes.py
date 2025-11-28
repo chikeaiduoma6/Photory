@@ -1,13 +1,16 @@
+import io
 import os
 import shutil
 import uuid
+import json
 from datetime import datetime, date
 from fractions import Fraction
 from typing import List
 
 from flask import Blueprint, current_app, jsonify, request, send_file
 from flask_jwt_extended import get_jwt_identity, verify_jwt_in_request
-from PIL import ExifTags, Image as PILImage, ImageEnhance
+from pillow_heif import read_heif, register_heif_opener
+from PIL import ExifTags, Image as PILImage, ImageEnhance, ImageOps
 from sqlalchemy import func, or_
 
 from .extensions import db
@@ -16,6 +19,8 @@ from .models import Image, ImageVersion, Tag, image_tags
 images_bp = Blueprint("images", __name__, url_prefix="/api/v1/images")
 
 DEFAULT_TAG_COLORS = ["#ff9db8", "#8ed0ff", "#ffd27f", "#9dd0a5", "#c3a0ff", "#f7a3ff"]
+
+register_heif_opener()
 
 
 def _allowed(filename: str) -> bool:
@@ -44,34 +49,113 @@ def _gps_to_decimal(gps_info) -> tuple[float | None, float | None]:
         return None, None
 
 
-def _extract_exif(pil_img: PILImage.Image) -> dict:
-    exif: dict = {}
+def _tag_name(tag_id) -> str:
+    if isinstance(tag_id, int):
+        return ExifTags.TAGS.get(tag_id, f"Tag_{tag_id}")
+    return str(tag_id)
+
+
+def _format_exif_value(val):
     try:
-        raw = pil_img.getexif()
-        data = dict(raw.items()) if raw else {}
-        if not data and pil_img.info.get("exif"):
-            try:
-                exif_obj = PILImage.Exif()
-                exif_obj.load(pil_img.info["exif"])
-                data = dict(exif_obj.items())
-            except Exception:
-                pass
-        tags = {ExifTags.TAGS.get(k, k): v for k, v in data.items()}
-        exif["taken_at"] = tags.get("DateTimeOriginal") or tags.get("DateTime")
-        exif["camera"] = tags.get("Model")
-        exif["lens"] = tags.get("LensModel")
-        exif["iso"] = str(tags.get("ISOSpeedRatings") or tags.get("PhotographicSensitivity") or "")
-        exif["exposure"] = str(tags.get("ExposureTime") or "")
-        exif["aperture"] = (
-            f"f/{tags['FNumber'][0] / tags['FNumber'][1]}"
-            if isinstance(tags.get("FNumber"), tuple)
-            else str(tags.get("FNumber") or "")
-        )
-        exif["focal"] = str(tags.get("FocalLength") or "")
-        exif["gps"] = tags.get("GPSInfo")
+        if isinstance(val, bytes):
+            return val.decode(errors="ignore")
+        if isinstance(val, tuple):
+            if len(val) == 2 and all(isinstance(x, (int, float)) for x in val):
+                a, b = val
+                return f"{a}/{b}" if b else str(a)
+            return " ".join(str(x) for x in val)
+        return str(val)
     except Exception:
-        pass
-    return exif
+        return str(val)
+
+
+def _format_fraction(val) -> Fraction | None:
+    try:
+        if isinstance(val, Fraction):
+            return val
+        if isinstance(val, tuple) and len(val) == 2 and val[1]:
+            return Fraction(val[0], val[1])
+        if isinstance(val, str):
+            txt = val.strip()
+            if "/" in txt:
+                a, b = txt.split("/", 1)
+                return Fraction(float(a), float(b))
+            return Fraction(txt).limit_denominator()
+        if isinstance(val, (int, float)):
+            return Fraction(val).limit_denominator()
+    except Exception:
+        return None
+    return None
+
+
+def _to_float(val) -> float | None:
+    frac = _format_fraction(val)
+    if frac is not None:
+        try:
+            return float(frac)
+        except Exception:
+            return None
+    try:
+        return float(val)
+    except Exception:
+        return None
+
+
+def _friendly_exposure(val) -> str:
+    frac = _format_fraction(val)
+    if not frac:
+        return _format_exif_value(val) if val is not None else ""
+    if frac.numerator == 0:
+        return ""
+    if frac.numerator == 1:
+        return f"1/{frac.denominator}s"
+    return f"{float(frac):.4f}s"
+
+
+def _friendly_aperture(val) -> str:
+    num = _to_float(val)
+    if num:
+        return f"f/{num:.1f}".rstrip("0").rstrip(".")
+    return _format_exif_value(val) if val is not None else ""
+
+
+def _friendly_focal(val) -> str:
+    num = _to_float(val)
+    if num:
+        return f"{num:.1f} mm".rstrip("0").rstrip(".")
+    return _format_exif_value(val) if val is not None else ""
+
+
+def _format_lens_spec(val) -> str:
+    if isinstance(val, (list, tuple)):
+        nums = []
+        for item in val:
+            num = _to_float(item)
+            if num:
+                nums.append(num)
+        nums = [n for n in nums if n > 0]
+        if not nums:
+            return ""
+        if len(nums) == 1:
+            s = f"{nums[0]:.1f}".rstrip("0").rstrip(".")
+            return f"{s} mm"
+        low, high = min(nums), max(nums)
+        if abs(low - high) < 0.01:
+            s = f"{low:.1f}".rstrip("0").rstrip(".")
+            return f"{s} mm"
+        s_low = f"{low:.1f}".rstrip("0").rstrip(".")
+        s_high = f"{high:.1f}".rstrip("0").rstrip(".")
+        return f"{s_low}-{s_high} mm"
+    return _format_exif_value(val) if val is not None else ""
+
+
+def _format_location(lat: float | None, lon: float | None) -> str:
+    if lat is None or lon is None:
+        return ""
+    try:
+        return f"{lat:.6f}, {lon:.6f}"
+    except Exception:
+        return ""
 
 
 def _parse_taken_at(raw: str | None):
@@ -85,8 +169,142 @@ def _parse_taken_at(raw: str | None):
     return None
 
 
+def _format_taken_at_str(raw: str | None) -> str:
+    dt = _parse_taken_at(raw)
+    if dt:
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    return raw or ""
+
+
+def _collect_exif_sources(pil_img: PILImage.Image, exif_bytes: bytes | None) -> tuple[dict, dict]:
+    merged: dict = {}
+    raw_map: dict = {}
+    sources: list[dict] = []
+
+    try:
+        raw = pil_img.getexif()
+        if raw:
+            sources.append(dict(raw.items()))
+            if hasattr(raw, "get_ifd"):
+                for ifd_name in ("Exif", "GPS", "Interop"):
+                    try:
+                        ifd_id = getattr(ExifTags.IFD, ifd_name, None)
+                        if ifd_id is not None:
+                            sources.append(dict(raw.get_ifd(ifd_id).items()))
+                    except Exception:
+                        continue
+    except Exception:
+        pass
+
+    if exif_bytes:
+        try:
+            exif_obj = PILImage.Exif()
+            exif_obj.load(exif_bytes)
+            sources.append(dict(exif_obj.items()))
+        except Exception:
+            pass
+
+    for src in sources:
+        for k, v in (src.items() if src else []):
+            name = _tag_name(k)
+            if name not in merged:
+                merged[name] = v
+            raw_map[name] = _format_exif_value(v)
+            raw_map[str(k)] = _format_exif_value(v)
+
+    gps_block = merged.get("GPSInfo") or merged.get("GPS")
+    if isinstance(gps_block, dict):
+        for gk, gv in gps_block.items():
+            gname = ExifTags.GPSTAGS.get(gk, f"{gk}")
+            raw_map[f"GPS_{gname}"] = _format_exif_value(gv)
+
+    return merged, raw_map
+
+
+def _load_heif_with_exif(raw_bytes: bytes) -> tuple[PILImage.Image | None, bytes | None]:
+    """读取 HEIF，返回 PIL Image 和 EXIF 二进制"""
+    try:
+        heif = read_heif(raw_bytes)
+    except Exception:
+        return None, None
+    exif_bytes = None
+    for meta in heif.metadata or []:
+        if meta.get("type") == "Exif":
+            exif_bytes = meta.get("data")
+            break
+    try:
+        img = PILImage.frombytes(heif.mode or "RGB", heif.size, heif.data, "raw")
+    except Exception:
+        img = None
+    return img, exif_bytes
+
+
+def _extract_exif(pil_img: PILImage.Image, exif_bytes: bytes | None = None) -> dict:
+    exif: dict = {}
+    width, height = pil_img.size
+    raw_map: dict = {}
+    try:
+        tags, raw_map = _collect_exif_sources(pil_img, exif_bytes)
+
+        exif["taken_at"] = tags.get("DateTimeOriginal") or tags.get("DateTimeDigitized") or tags.get("DateTime")
+        exif["camera"] = tags.get("Model") or tags.get("Make")
+        lens_spec = tags.get("LensSpecification")
+        exif["lens"] = tags.get("LensModel") or tags.get("LensMake") or _format_lens_spec(lens_spec)
+        iso_val = (
+            tags.get("ISOSpeedRatings")
+            or tags.get("PhotographicSensitivity")
+            or tags.get("ISO")
+            or tags.get("StandardOutputSensitivity")
+        )
+        exif["iso"] = _format_exif_value(iso_val) if iso_val is not None else ""
+        exposure_val = tags.get("ExposureTime") or tags.get("ShutterSpeedValue") or tags.get("ExposureBiasValue")
+        exif["exposure"] = _friendly_exposure(exposure_val)
+        aperture_val = tags.get("FNumber") or tags.get("ApertureValue")
+        exif["aperture"] = _friendly_aperture(aperture_val)
+
+        focal_val = tags.get("FocalLength") or tags.get("FocalLengthIn35mmFilm")
+        if not focal_val and isinstance(lens_spec, (list, tuple)) and lens_spec:
+            focal_val = lens_spec[0]
+        exif["focal"] = _friendly_focal(focal_val)
+
+        gps_info = tags.get("GPSInfo") or tags.get("GPS")
+        exif["gps"] = gps_info
+        exif["resolution"] = f"{width}x{height}" if width and height else ""
+        exif["software"] = tags.get("Software") or ""
+        exif["make"] = tags.get("Make") or ""
+        exif["model"] = tags.get("Model") or ""
+        exif["orientation"] = tags.get("Orientation") or ""
+        exif["datetime_digitized"] = tags.get("DateTimeDigitized") or tags.get("DateTime") or ""
+
+        if isinstance(gps_info, dict):
+            for k, v in gps_info.items():
+                raw_map[f"GPS_{k}"] = _format_exif_value(v)
+
+        raw_map.update(
+            {
+                "Resolution": exif["resolution"],
+                "TakenAt": exif["taken_at"] or "",
+                "Camera": exif["camera"] or "",
+                "Lens": exif["lens"] or _format_lens_spec(lens_spec),
+                "ISO": exif["iso"] or _format_exif_value(iso_val),
+                "ExposureTime": exif["exposure"] or _format_exif_value(exposure_val),
+                "Aperture": exif["aperture"] or _format_exif_value(aperture_val),
+                "FocalLength": exif["focal"] or _format_exif_value(focal_val),
+                "Software": exif["software"] or "",
+                "Make": exif["make"] or "",
+                "Model": exif["model"] or "",
+            }
+        )
+    except Exception:
+        current_app.logger.exception("extract exif failed")
+
+    exif["raw"] = raw_map
+    return exif
+
+
 def _save_thumb(src_path: str, dest_path: str, size=(400, 400)) -> None:
     with PILImage.open(src_path) as img:
+        img = ImageOps.exif_transpose(img)
         img.thumbnail(size)
         img.save(dest_path, format="JPEG", quality=85)
 
@@ -141,23 +359,63 @@ def _normalize_rel_path(path: str | None) -> str | None:
     return cleaned
 
 
+def _build_display_exif(img: Image, exif_raw: dict) -> list[dict]:
+    def pick(*keys):
+        for k in keys:
+            val = exif_raw.get(k)
+            if val:
+                return val
+        return ""
+
+    taken = img.taken_at.strftime("%Y-%m-%d %H:%M:%S") if img.taken_at else _format_taken_at_str(
+        pick("TakenAt", "DateTimeOriginal", "DateTime")
+    )
+    resolution = f"{img.width} x {img.height}" if img.width and img.height else pick("Resolution", "ImageWidth")
+    location_str = _format_location(img.latitude, img.longitude)
+
+    items = [
+        {"key": "camera", "label": "相机", "value": img.camera or pick("Camera", "Model", "Make")},
+        {"key": "lens", "label": "镜头", "value": img.lens or pick("Lens", "LensModel", "LensSpecification")},
+        {"key": "aperture", "label": "光圈", "value": img.aperture or pick("Aperture", "FNumber", "ApertureValue")},
+        {"key": "exposure", "label": "快门", "value": img.exposure or pick("ExposureTime", "ShutterSpeedValue")},
+        {"key": "iso", "label": "ISO", "value": img.iso or pick("ISO", "PhotographicSensitivity", "ISOSpeedRatings")},
+        {"key": "focal", "label": "焦距", "value": img.focal or pick("FocalLength", "FocalLengthIn35mmFilm")},
+        {"key": "resolution", "label": "分辨率", "value": resolution},
+        {"key": "taken_at", "label": "拍摄时间", "value": taken},
+        {"key": "location", "label": "拍摄地点", "value": location_str},
+        {"key": "software", "label": "软件", "value": pick("Software")},
+    ]
+    for item in items:
+        item["value"] = item["value"] or "--"
+    return items
+
+
 def _exif_tag_list(img: Image) -> list[str]:
-    raw = [img.camera, img.lens, img.iso, img.aperture, img.exposure, img.focal]
-    if img.width and img.height:
-        raw.append(f"{img.width}x{img.height}")
     tags: list[str] = []
-    for val in raw:
-        if val:
-            s = str(val).strip()
-            if s:
-                tags.append(s)
+    base = [
+        img.camera,
+        img.lens,
+        img.iso,
+        img.aperture,
+        img.exposure,
+        img.focal,
+    ]
+    if img.width and img.height:
+        base.append(f"{img.width}x{img.height}")
+    if img.taken_at:
+        base.append(img.taken_at.strftime("%Y-%m-%d %H:%M:%S"))
+    if img.latitude is not None and img.longitude is not None:
+        base.append(_format_location(img.latitude, img.longitude))
+
     seen = set()
-    uniq = []
-    for t in tags:
-        if t not in seen:
-            uniq.append(t)
-            seen.add(t)
-    return uniq
+    for val in base:
+        if not val:
+            continue
+        s = str(val).strip()
+        if s and s not in seen:
+            tags.append(s)
+            seen.add(s)
+    return tags
 
 
 def _serialize_version(ver: ImageVersion) -> dict:
@@ -184,6 +442,14 @@ def _serialize_image(img: Image) -> dict:
     data["exif_tags"] = _exif_tag_list(img)
     versions = img.versions.order_by(ImageVersion.created_at.desc()).all()
     data["version_history"] = [_serialize_version(v) for v in versions]
+    if img.exif_json:
+        try:
+            data["exif_raw"] = json.loads(img.exif_json)
+        except Exception:
+            data["exif_raw"] = {}
+    else:
+        data["exif_raw"] = {}
+    data["exif_display"] = _build_display_exif(img, data["exif_raw"])
     return data
 
 
@@ -353,6 +619,7 @@ def _save_version_entry(img: Image, note: str) -> None:
 def _save_image_and_thumb(img: PILImage.Image, dest_rel: str, thumb_rel: str | None, mime: str) -> tuple[int, int, int, str | None]:
     disk_path = os.path.join(current_app.config["UPLOAD_DIR"], dest_rel)
     os.makedirs(os.path.dirname(disk_path), exist_ok=True)
+    img = ImageOps.exif_transpose(img)
     img.save(disk_path, format="JPEG", quality=92)
     width, height = img.size
     size = os.path.getsize(disk_path)
@@ -404,6 +671,7 @@ def upload():
     visibility = request.form.get("visibility", "private")
     tag_names = [x.strip() for x in (request.form.get("tags") or "").split(",") if x.strip()]
     custom_name = (request.form.get("name") or "").strip()
+    description = (request.form.get("description") or "").strip()
 
     _ensure_user_dirs(user_id)
 
@@ -417,16 +685,45 @@ def upload():
             rel_path = _normalize_rel_path(os.path.join(f"user_{user_id}", f"{file_token}.{ext}"))
             disk_path = os.path.join(current_app.config["UPLOAD_DIR"], rel_path)
 
+            exif = {}
+            width = height = 0
+
             if is_heic:
-                with PILImage.open(f.stream) as img:
-                    width, height = img.size
-                    exif = _extract_exif(img)
-                    img.convert("RGB").save(disk_path, format="JPEG", quality=95)
+                raw_bytes = f.stream.read()
+                exif_bytes = None
+                pil_img = None
+                try:
+                    heif_img, heif_exif = _load_heif_with_exif(raw_bytes)
+                    exif_bytes = heif_exif or exif_bytes
+                    pil_img = heif_img
+                except Exception:
+                    pil_img = None
+                try:
+                    with PILImage.open(io.BytesIO(raw_bytes)) as probe:
+                        pil_img = pil_img or probe.copy()
+                        exif_bytes = exif_bytes or probe.info.get("exif")
+                except Exception:
+                    pil_img = pil_img or None
+                if pil_img is None:
+                    pil_img = PILImage.open(io.BytesIO(raw_bytes))
+                pil_img = ImageOps.exif_transpose(pil_img)
+                width, height = pil_img.size
+                exif = _extract_exif(pil_img, exif_bytes)
+                save_kwargs = {"format": "JPEG", "quality": 95}
+                if exif_bytes:
+                    save_kwargs["exif"] = exif_bytes
+                pil_img.convert("RGB").save(disk_path, **save_kwargs)
             else:
                 f.save(disk_path)
                 with PILImage.open(disk_path) as img:
+                    img = ImageOps.exif_transpose(img)
                     width, height = img.size
                     exif = _extract_exif(img)
+                    fmt = img.format or "JPEG"
+                    save_kwargs = {"format": fmt}
+                    if img.info.get("exif"):
+                        save_kwargs["exif"] = img.info["exif"]
+                    img.save(disk_path, **save_kwargs)
 
             lat = lon = None
             if exif.get("gps"):
@@ -442,6 +739,7 @@ def upload():
             image_row = Image(
                 user_id=user_id,
                 name=custom_name or os.path.splitext(f.filename)[0],
+                description=description or None,
                 filename=rel_path,
                 original_name=f.filename,
                 mime_type="image/jpeg" if is_heic else f.mimetype,
@@ -457,6 +755,7 @@ def upload():
                 focal=exif.get("focal"),
                 latitude=lat,
                 longitude=lon,
+                exif_json=json.dumps(exif.get("raw") or {}),
                 thumb_path=thumb_rel,
                 visibility="public" if visibility == "public" else "private",
                 folder=folder,
@@ -717,6 +1016,80 @@ def image_detail(image_id: int):
     return jsonify(_serialize_image(img))
 
 
+@images_bp.post("/<int:image_id>/tags")
+def update_tags(image_id: int):
+    user_id = _current_user_id()
+    img = _get_user_image(image_id, user_id, include_deleted=False)
+
+    data = request.get_json() or {}
+    raw_tags = data.get("tags")
+    if raw_tags is None:
+        return jsonify({"message": "请提供 tags 数组"}), 400
+    if not isinstance(raw_tags, list):
+        return jsonify({"message": "tags 字段必须是数组"}), 400
+
+    names: list[str] = []
+    color_map: dict[str, str] = {}
+    for item in raw_tags:
+        if isinstance(item, str):
+            name = item.strip()
+        elif isinstance(item, dict):
+            name = str(item.get("name") or "").strip()
+            if item.get("color"):
+                color_map[name] = item.get("color")
+        else:
+            continue
+        if name:
+            names.append(name)
+
+    uniq_names: list[str] = []
+    seen = set()
+    for n in names:
+        if n not in seen:
+            uniq_names.append(n)
+            seen.add(n)
+
+    try:
+        img.tags = _get_or_create_tags(uniq_names, user_id=user_id, color_map=color_map)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        current_app.logger.exception("update tags failed")
+        return jsonify({"message": "更新标签失败"}), 500
+
+    tag_objs = [
+        {"id": t.id, "name": t.name, "color": _sanitize_color(t.color) or _color_from_name(t.name)}
+        for t in img.tags
+    ]
+    return jsonify(
+        {
+            "message": "ok",
+            "tags": [t.name for t in img.tags],
+            "tag_objects": tag_objs,
+            "item": _serialize_image(img),
+        }
+    )
+
+
+@images_bp.patch("/<int:image_id>/meta")
+def update_meta(image_id: int):
+    user_id = _current_user_id()
+    img = _get_user_image(image_id, user_id, include_deleted=False)
+    data = request.get_json() or {}
+    name = (data.get("name") or "").strip()
+    description = (data.get("description") or "").strip()
+    visibility = (data.get("visibility") or img.visibility).strip()
+    folder = (data.get("folder") or img.folder or "默认图库").strip() or "默认图库"
+
+    if name:
+        img.name = name
+    img.description = description or None
+    img.visibility = "public" if visibility == "public" else "private"
+    img.folder = folder
+    db.session.commit()
+    return jsonify({"message": "ok", "item": _serialize_image(img)})
+
+
 @images_bp.get("/<int:image_id>/raw")
 def serve_raw(image_id: int):
     user_id = _current_user_id()
@@ -744,152 +1117,3 @@ def serve_thumb(image_id: int):
     if not disk_path or not os.path.exists(disk_path):
         return jsonify({"message": "文件不存在"}), 404
     return send_file(disk_path, mimetype=img.mime_type)
-
-
-@images_bp.post("/<int:image_id>/tags")
-def update_tags(image_id: int):
-    user_id = _current_user_id()
-    img = _get_user_image(image_id, user_id, include_deleted=False)
-
-    data = request.get_json() or {}
-    raw_tags = data.get("tags") or []
-    color_map = data.get("colors") or {}
-    names: list[str] = []
-    colors: dict[str, str] = {}
-
-    for item in raw_tags:
-        if isinstance(item, dict):
-            name = (item.get("name") or item.get("label") or "").strip()
-            if not name:
-                continue
-            names.append(name)
-            color_val = _sanitize_color(item.get("color"))
-            if color_val:
-                colors[name] = color_val
-        else:
-            name = str(item).strip()
-            if name:
-                names.append(name)
-
-    for k, v in (color_map or {}).items():
-        val = _sanitize_color(str(v))
-        if val:
-            colors[str(k)] = val
-
-    img.tags = _get_or_create_tags(names, user_id=user_id, color_map=colors)
-    db.session.commit()
-    return jsonify(
-        {
-            "message": "ok",
-            "tags": [t.name for t in img.tags],
-            "tag_objects": [
-                {"id": t.id, "name": t.name, "color": _sanitize_color(t.color) or _color_from_name(t.name)}
-                for t in img.tags
-            ],
-        }
-    )
-
-
-@images_bp.post("/<int:image_id>/export")
-def export_image(image_id: int):
-    user_id = _current_user_id()
-    img = _get_user_image(image_id, user_id, include_deleted=False)
-
-    data = request.get_json() or {}
-    mode = data.get("option") or data.get("mode") or data.get("export_option") or "override"
-    name = (data.get("name") or img.name).strip() or img.name
-    folder = (data.get("folder") or img.folder or "默认图库").strip() or "默认图库"
-    tags_payload = data.get("tags") or []
-    adjustments = data.get("adjustments") or {}
-    crop = data.get("crop") or {}
-    crop_box = data.get("crop_box") or {}
-    rotation = data.get("rotation") or 0
-    zoom = data.get("zoom") or 1
-
-    color_map: dict[str, str] = {}
-    tag_names: list[str] = []
-    for item in tags_payload:
-        if isinstance(item, dict):
-            nm = (item.get("name") or item.get("label") or "").strip()
-            if nm:
-                tag_names.append(nm)
-                val = _sanitize_color(item.get("color"))
-                if val:
-                    color_map[nm] = val
-        else:
-            nm = str(item).strip()
-            if nm:
-                tag_names.append(nm)
-
-    rel = _normalize_rel_path(img.filename)
-    if not rel:
-        return jsonify({"message": "文件路径异常"}), 400
-    src_path = os.path.join(current_app.config["UPLOAD_DIR"], rel)
-    if not os.path.exists(src_path):
-        return jsonify({"message": "源文件不存在"}), 404
-
-    with PILImage.open(src_path) as pil_img:
-        edited = _apply_edits(
-            pil_img,
-            {
-                "rotation": rotation,
-                "zoom": zoom,
-                "crop": crop,
-                "crop_box": crop_box if (crop.get("preset") or crop.get("cropPreset") or "free") == "free" else {},
-                "adjustments": adjustments,
-            },
-        )
-
-    if mode == "override":
-        _save_version_entry(img, "覆盖前版本")
-
-    file_token = uuid.uuid4().hex
-    ext = os.path.splitext(rel)[-1] or ".jpg"
-    if mode == "override":
-        dest_rel = rel
-        thumb_rel = img.thumb_path or _normalize_rel_path(os.path.join(f"user_{user_id}", f"{file_token}_thumb.jpg"))
-    else:
-        dest_rel = _normalize_rel_path(os.path.join(f"user_{user_id}", f"{file_token}{ext}"))
-        thumb_rel = _normalize_rel_path(os.path.join(f"user_{user_id}", f"{file_token}_thumb.jpg"))
-
-    width, height, size, thumb_path = _save_image_and_thumb(edited, dest_rel, thumb_rel, img.mime_type)
-
-    if mode == "override":
-        img.name = name
-        img.folder = folder
-        img.filename = dest_rel
-        img.thumb_path = thumb_path
-        img.size = size
-        img.width = width
-        img.height = height
-        img.updated_at = datetime.utcnow()
-        img.tags = _get_or_create_tags(tag_names or [t.name for t in img.tags], user_id=user_id, color_map=color_map)
-        db.session.commit()
-        return jsonify({"message": "ok", "item": _serialize_image(img)})
-
-    new_img = Image(
-        user_id=user_id,
-        name=name,
-        filename=dest_rel,
-        original_name=name,
-        mime_type=img.mime_type,
-        size=size,
-        width=width,
-        height=height,
-        taken_at=img.taken_at,
-        camera=img.camera,
-        lens=img.lens,
-        iso=img.iso,
-        exposure=img.exposure,
-        aperture=img.aperture,
-        focal=img.focal,
-        latitude=img.latitude,
-        longitude=img.longitude,
-        thumb_path=thumb_path,
-        visibility=img.visibility,
-        folder=folder,
-    )
-    new_img.tags = _get_or_create_tags(tag_names or [t.name for t in img.tags], user_id=user_id, color_map=color_map)
-    db.session.add(new_img)
-    db.session.commit()
-    return jsonify({"message": "ok", "item": _serialize_image(new_img)})

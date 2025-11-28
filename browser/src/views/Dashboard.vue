@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import axios from 'axios'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -45,7 +45,7 @@ const links = [
   { label: '文件夹', icon: '📁', path: '/folders' },
   { label: '相册', icon: '📚', path: '/albums' },
   { label: '智能分类', icon: '🧠', path: '/smart' },
-  { label: 'AI 工作台', icon: '🤖', path: '/ai' },
+  { label: 'AI 工作流', icon: '🤖', path: '/ai' },
   { label: '任务中心', icon: '🧾', path: '/tasks' },
   { label: '回收站', icon: '🗑️', path: '/recycle' },
   { label: '设置', icon: '⚙️', path: '/settings' },
@@ -65,6 +65,10 @@ function toggleNav() {
 function closeNav() {
   navOpen.value = false
 }
+watch(
+  () => router.currentRoute.value.fullPath,
+  () => closeNav()
+)
 
 function fallbackToRaw(event: Event, url: string) {
   const img = event.target as HTMLImageElement | null
@@ -117,10 +121,6 @@ watch(
       fetchStats()
     } else images.value = []
   }
-)
-watch(
-  () => router.currentRoute.value.fullPath,
-  () => closeNav()
 )
 
 function handlePageChange(p: number) {
@@ -179,6 +179,41 @@ async function batchTrash() {
     /* cancelled or failed */
   }
 }
+
+/* 轮播逻辑 */
+const sliderImages = computed(() => images.value.slice(0, 8))
+const currentSlide = ref(0)
+const sliderTimer = ref<number | null>(null)
+const hasSlider = computed(() => sliderImages.value.length > 0)
+
+function nextSlide() {
+  if (!sliderImages.value.length) return
+  currentSlide.value = (currentSlide.value + 1) % sliderImages.value.length
+}
+function prevSlide() {
+  if (!sliderImages.value.length) return
+  currentSlide.value = (currentSlide.value - 1 + sliderImages.value.length) % sliderImages.value.length
+}
+function startSlider() {
+  stopSlider()
+  if (!sliderImages.value.length) return
+  sliderTimer.value = window.setInterval(nextSlide, 4000)
+}
+function stopSlider() {
+  if (sliderTimer.value !== null) {
+    clearInterval(sliderTimer.value)
+    sliderTimer.value = null
+  }
+}
+watch(
+  () => sliderImages.value.map(i => i.id).join(','),
+  () => {
+    currentSlide.value = 0
+    if (sliderImages.value.length) startSlider()
+    else stopSlider()
+  }
+)
+onUnmounted(stopSlider)
 </script>
 
 <template>
@@ -188,7 +223,7 @@ async function batchTrash() {
         <div class="icon">📸</div>
         <div class="text">
           <h1>Photory</h1>
-          <p>记录世间每一份美好，让瞬间变成永恒</p>
+          <p>记录世间每一份美好，让瞬间变成永恒～</p>
         </div>
       </div>
 
@@ -247,7 +282,7 @@ async function batchTrash() {
         <div class="hero-left">
           <div class="badge">今日心情 · 小小记录</div>
           <h2>让美好永远留在心间 🌸</h2>
-          <p>这里是你的专属回忆小宇宙，生活里的每一朵花、每一片天空、每一场落日，都值得被认真记录。</p>
+          <p>这里是你的专属回忆小宇宙，生活里的每一朵花、每一片天空、每一场落日，都值得被认真记录～</p>
           <div class="stats">
             <div><b>{{ total }}</b><span>图片总数</span></div>
             <div><b>1</b><span>今日上传</span></div>
@@ -257,6 +292,32 @@ async function batchTrash() {
 
         <div class="hero-right">
           <div class="hero-img"><span>🌷 Photory 等你来探索哦</span></div>
+        </div>
+      </section>
+
+      <section v-if="hasSlider" class="carousel" @mouseenter="stopSlider" @mouseleave="startSlider">
+        <div class="carousel-head">
+          <div class="carousel-title">精选轮播</div>
+          <div class="carousel-actions">
+            <button class="pill ghost" @click="prevSlide">‹</button>
+            <button class="pill ghost" @click="nextSlide">›</button>
+          </div>
+        </div>
+        <div class="carousel-window">
+          <div class="carousel-track" :style="{ transform: `translateX(-${currentSlide * 100}%)` }">
+            <div
+              v-for="img in sliderImages"
+              :key="img.id"
+              class="slide"
+              @click="toggleSelect(img.id)"
+            >
+              <img :src="img.fullUrl" :alt="img.displayName" loading="lazy" @error="fallbackToRaw($event, img.fullUrl)" />
+              <div class="slide-mask">
+                <div class="slide-title">{{ img.displayName }}</div>
+                <div class="slide-meta">{{ img.created_at?.slice(0, 16) || '' }}</div>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -289,7 +350,7 @@ async function batchTrash() {
         <div v-if="!loading && images.length === 0" class="empty-box">
           <div class="empty-row">
             <span>你的图库还是空空如也哦，</span>
-            <span>快来上传第一张图片吧！</span>
+            <span>快来上传第一张图片吧～</span>
           </div>
         </div>
         <div
@@ -510,6 +571,79 @@ main {
   color: #a15773;
   text-align: center;
 }
+
+/* 轮播 */
+.carousel {
+  padding: 10px 24px 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.carousel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.carousel-title {
+  font-weight: 700;
+  color: #ff3f87;
+}
+.carousel-actions {
+  display: flex;
+  gap: 8px;
+}
+.carousel-window {
+  position: relative;
+  overflow: hidden;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.8);
+  box-shadow: 0 12px 28px rgba(255, 165, 199, 0.25);
+}
+.carousel-track {
+  display: flex;
+  transition: transform 0.45s ease;
+  width: 100%;
+}
+.slide {
+  min-width: 100%;
+  position: relative;
+  cursor: pointer;
+}
+.slide img {
+  width: 100%;
+  height: 360px;
+  object-fit: cover;
+}
+.slide-mask {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, transparent 55%, rgba(0, 0, 0, 0.32));
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding: 14px 16px;
+  color: #fff;
+  gap: 4px;
+}
+.slide-title {
+  font-weight: 600;
+}
+.slide-meta {
+  font-size: 12px;
+  opacity: 0.85;
+}
+.pill {
+  border: 1px solid rgba(255, 180, 205, 0.9);
+  border-radius: 12px;
+  padding: 4px 10px;
+  background: #fff7fb;
+  cursor: pointer;
+  color: #b05f7a;
+}
+.pill.ghost:hover {
+  background: #ffe2ef;
+}
+
 .toolbar {
   display: flex;
   justify-content: space-between;
@@ -586,8 +720,11 @@ main {
 }
 .gallery.grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 18px;
+}
+.gallery.grid .photo {
+  height: 320px;
 }
 .gallery.masonry {
   column-count: 4;
@@ -647,15 +784,15 @@ main {
   box-shadow: 0 10px 20px rgba(255, 153, 187, 0.28);
   cursor: pointer;
   transition: transform 0.15s ease, box-shadow 0.15s ease, border 0.15s ease;
-}
-.gallery.grid .photo {
-  min-height: 230px;
   display: flex;
   flex-direction: column;
 }
+.gallery.grid .photo {
+  min-height: 230px;
+}
 .photo img {
   width: 100%;
-  height: 72%;
+  height: 78%;
   object-fit: cover;
   background: #fce6f0;
 }
@@ -849,7 +986,7 @@ footer {
 
 @media (max-width: 1200px) {
   .gallery.grid {
-    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
   .gallery.masonry {
     column-count: 3;
@@ -881,10 +1018,19 @@ footer {
     padding-inline: 16px;
   }
   .gallery.grid {
-    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .gallery.grid .photo {
+    height: 260px;
   }
   .gallery.masonry {
     column-count: 2;
+  }
+  .carousel {
+    padding-inline: 16px;
+  }
+  .slide img {
+    height: 240px;
   }
 }
 @media (max-width: 640px) {
@@ -912,9 +1058,6 @@ footer {
   }
   .gallery.masonry {
     column-count: 1;
-  }
-  .photo img {
-    height: 68%;
   }
 }
 </style>

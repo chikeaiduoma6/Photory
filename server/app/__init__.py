@@ -1,6 +1,6 @@
 import os
 from flask import Flask, jsonify
-from sqlalchemy import text
+from sqlalchemy import text, inspect
 from .config import Config
 from .extensions import bcrypt, db, jwt
 from .auth_routes import auth_bp
@@ -39,11 +39,33 @@ def create_app(config_class: type[Config] = Config) -> Flask:
 
     with app.app_context():
         db.create_all()
+        _ensure_columns()
         _ensure_dirs(app)
         _ensure_default_admin()
         _fix_existing_paths()
 
     return app
+
+
+def _ensure_columns():
+    """
+    自动补充 images 表缺失的列（description, exif_json）。
+    已存在则跳过，确保旧库也可无感升级。
+    """
+    try:
+        insp = inspect(db.engine)
+        cols = {c["name"] for c in insp.get_columns("images")}
+        alters = []
+        if "description" not in cols:
+            alters.append("ALTER TABLE images ADD COLUMN description TEXT NULL")
+        if "exif_json" not in cols:
+            alters.append("ALTER TABLE images ADD COLUMN exif_json LONGTEXT NULL")
+        for sql in alters:
+            db.session.execute(text(sql))
+        if alters:
+            db.session.commit()
+    except Exception:
+        db.session.rollback()
 
 
 def _ensure_dirs(app: Flask):

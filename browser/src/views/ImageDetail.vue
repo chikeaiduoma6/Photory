@@ -22,6 +22,10 @@ const aiDescription = ref('这里是 AI 生成的图片描述，点击按钮可�
 const newTag = ref('')
 const newTagColor = ref(palette[0])
 
+const editName = ref('')
+const editDescription = ref('')
+const savingMeta = ref(false)
+
 const navOpen = ref(false)
 const toggleNav = () => (navOpen.value = !navOpen.value)
 const closeNav = () => (navOpen.value = false)
@@ -37,12 +41,32 @@ const thumbUrl = computed(() =>
 )
 const heroUrl = computed(() => imageUrl.value || thumbUrl.value)
 const customTags = computed(() => detail.value?.tag_objects || [])
+const exifRaw = computed(() => detail.value?.exif_raw || {})
+
+const exifDisplay = computed(() => {
+  const fromApi = detail.value?.exif_display
+  if (Array.isArray(fromApi) && fromApi.length) {
+    return fromApi.map((i: any) => ({ ...i, value: i.value || '--' }))
+  }
+  const d = detail.value || {}
+  return [
+    { key: 'camera', label: '相机', value: d.camera || '--' },
+    { key: 'lens', label: '镜头', value: d.lens || '--' },
+    { key: 'aperture', label: '光圈', value: d.aperture || '--' },
+    { key: 'exposure', label: '快门', value: d.exposure || '--' },
+    { key: 'iso', label: 'ISO', value: d.iso || '--' },
+    { key: 'focal', label: '焦距', value: d.focal || '--' },
+    { key: 'resolution', label: '分辨率', value: d.width && d.height ? `${d.width} x ${d.height}` : '--' },
+    { key: 'taken_at', label: '拍摄时间', value: d.taken_at || '--' },
+    { key: 'location', label: '拍摄地点', value: d.latitude && d.longitude ? `${d.latitude}, ${d.longitude}` : '--' },
+    { key: 'software', label: '软件', value: (exifRaw.value || {}).Software || '--' },
+  ]
+})
+
 const exifTags = computed(() => {
-  if (!detail.value) return []
-  const exif = detail.value.exif_tags || []
-  const wh = detail.value.width && detail.value.height ? [`${detail.value.width}x${detail.value.height}`] : []
-  const arr = [...exif, ...wh].filter(Boolean).map((v: string) => String(v))
-  return Array.from(new Set(arr))
+  const backend = detail.value?.exif_tags || []
+  if (backend.length) return backend
+  return exifDisplay.value.filter(item => item.value && item.value !== '--').map(item => `${item.label}:${item.value}`)
 })
 const historyList = computed(() => detail.value?.version_history || [])
 
@@ -54,15 +78,20 @@ const links = [
   { label: '文件夹', icon: '📁', path: '/folders' },
   { label: '相册', icon: '📚', path: '/albums' },
   { label: '智能分类', icon: '🧠', path: '/smart' },
-  { label: 'AI 工作台', icon: '🤖', path: '/ai' },
+  { label: 'AI 工作流', icon: '🤖', path: '/ai' },
   { label: '任务中心', icon: '🧾', path: '/tasks' },
   { label: '回收站', icon: '🗑️', path: '/recycle' },
   { label: '设置', icon: '⚙️', path: '/settings' },
 ]
 
 const currentPath = computed(() => router.currentRoute.value.path)
-function go(path: string) { router.push(path); closeNav() }
-function isActive(path: string) { return currentPath.value === path || currentPath.value.startsWith(path + '/') }
+function go(path: string) {
+  router.push(path)
+  closeNav()
+}
+function isActive(path: string) {
+  return currentPath.value === path || currentPath.value.startsWith(path + '/')
+}
 
 function fallbackToRaw(event: Event) {
   const img = event.target as HTMLImageElement | null
@@ -76,6 +105,8 @@ async function fetchDetail() {
     const res = await axios.get(`/api/v1/images/${route.params.id}`)
     detail.value = res.data
     aiTags.value = res.data.ai_tags || []
+    editName.value = res.data.name || res.data.original_name || ''
+    editDescription.value = res.data.description || ''
   } catch (err: any) {
     ElMessage.error(err?.response?.data?.message || '获取图片详情失败')
     router.push('/')
@@ -91,7 +122,8 @@ function normalizeColor(raw?: string | null, idx = 0, name = '') {
   const rgba = raw.match(/^rgba?\((\d{1,3}),\s*(\d{1,3}),\s*(\d{1,3})/)
   if (rgba) {
     const [r, g, b] = rgba.slice(1, 4).map(n => Math.max(0, Math.min(255, Number(n))))
-    return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`
+    const toHex = (n: number) => n.toString(16).padStart(2, '0')
+    return `#${toHex(r)}${toHex(g)}${toHex(b)}`
   }
   return palette[(idx + name.length) % palette.length]
 }
@@ -142,6 +174,24 @@ function generateAiTags() {
     aiDescription.value = 'AI 生成：根据图像内容给出的标签与简短描述，后端接入模型后可替换为真实结果。'
     aiLoading.value = false
   }, 800)
+}
+
+async function saveMeta() {
+  savingMeta.value = true
+  try {
+    const res = await axios.patch(`/api/v1/images/${route.params.id}/meta`, {
+      name: editName.value,
+      description: editDescription.value,
+      visibility: detail.value.visibility,
+      folder: detail.value.folder,
+    })
+    detail.value = res.data.item
+    ElMessage.success('已更新标题和描述')
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.message || '保存失败')
+  } finally {
+    savingMeta.value = false
+  }
 }
 
 function goBack() { router.back() }
@@ -249,19 +299,19 @@ onMounted(fetchDetail)
             <span>{{ detail.width }} × {{ detail.height }}</span>
             <span>{{ detail.visibility === 'public' ? '公开' : '私密' }}</span>
           </div>
-
-          <div class="mobile-actions">
-            <button class="pill-btn ghost" @click="goEdit">在线编辑</button>
-            <button class="pill-btn ghost" @click="download" :disabled="!imageUrl">下载</button>
-            <button class="pill-btn danger" @click="softDelete">删除</button>
-          </div>
         </div>
 
         <div class="info-panel">
           <div class="panel">
             <h3>基本信息</h3>
-            <div class="field"><label>标题</label><div class="value">{{ detail.name }}</div></div>
-            <div class="field"><label>描述</label><div class="value muted">（预留描述，后续可编辑）</div></div>
+            <div class="field">
+              <label>标题</label>
+              <input v-model="editName" />
+            </div>
+            <div class="field">
+              <label>描述</label>
+              <textarea v-model="editDescription" placeholder="可编辑的描述" rows="3"></textarea>
+            </div>
 
             <div class="field tags">
               <label>自定义标签</label>
@@ -288,7 +338,17 @@ onMounted(fetchDetail)
               <label>EXIF 标签</label>
               <div class="tag-list readonly">
                 <span v-for="t in exifTags" :key="t" class="tag ghost">{{ t }}</span>
-                <span v-if="!exifTags.length" class="muted">暂无 EXIF 标签</span>
+                <span v-if="!exifTags.length" class="muted">--</span>
+              </div>
+            </div>
+
+            <div class="field tags exif-raw">
+              <label>EXIF 信息</label>
+              <div class="exif-grid">
+                <div v-for="item in exifDisplay" :key="item.key" class="exif-row">
+                  <span class="k">{{ item.label }}</span>
+                  <span class="v">{{ item.value }}</span>
+                </div>
               </div>
             </div>
 
@@ -309,6 +369,10 @@ onMounted(fetchDetail)
               <span class="chip" :class="detail.visibility === 'public' ? 'primary' : 'muted'">
                 {{ detail.visibility === 'public' ? '公开' : '私密' }}
               </span>
+            </div>
+
+            <div class="meta-actions">
+              <button class="pill-btn" :disabled="savingMeta" @click="saveMeta">保存标题与描述</button>
             </div>
           </div>
 
@@ -345,12 +409,11 @@ onMounted(fetchDetail)
 .logo p { font-size: 11px; color: #b6788d; margin: 0; }
 nav a { display: block; padding: 9px 12px; border-radius: 12px; font-size: 14px; color: #6b3c4a; margin: 4px 0; cursor: pointer; }
 nav a.active, nav a:hover { background: rgba(255, 153, 187, 0.16); color: #ff4c8a; }
-
 main { flex: 1; display: flex; flex-direction: column; }
 .topbar { display: flex; justify-content: space-between; align-items: center; padding: 14px 24px; border-bottom: 1px solid rgba(255, 190, 210, 0.5); background: rgba(255, 255, 255, 0.9); gap: 10px; }
 .topbar .title { font-weight: 600; color: #ff4c8a; font-size: 18px; }
 .topbar .subtitle { font-size: 12px; color: #a36e84; }
-.topbar .right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.topbar .right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .icon-btn { background: #ffeef5; border: none; border-radius: 50%; width: 32px; height: 32px; cursor: pointer; }
 .icon-btn:hover { background: #ffd6e5; }
 .icon-btn.ghost { background: rgba(255, 255, 255, 0.65); border: 1px solid rgba(255, 190, 210, 0.7); }
@@ -359,18 +422,17 @@ main { flex: 1; display: flex; flex-direction: column; }
 .pill-btn.danger { background: linear-gradient(135deg, #ff9c9c, #ff6b6b); }
 .pill-btn.mini { padding: 6px 12px; font-size: 12px; }
 .pill-btn:disabled { opacity: 0.7; cursor: not-allowed; }
-
 .detail-layout { display: grid; grid-template-columns: 1.6fr 1fr; gap: 16px; padding: 16px 20px 10px; }
 .image-card { background: #fff; border-radius: 22px; padding: 16px; box-shadow: 0 12px 28px rgba(255, 165, 199, 0.25); display: flex; flex-direction: column; gap: 10px; }
 .hero-img { width: 100%; border-radius: 18px; object-fit: contain; background: #f9f1f6; max-height: 72vh; }
 .image-actions { display: flex; gap: 10px; font-size: 12px; color: #a35d76; flex-wrap: wrap; }
-.mobile-actions { display: none; gap: 8px; flex-wrap: wrap; }
-
 .info-panel { display: flex; flex-direction: column; gap: 12px; }
 .panel { background: rgba(255, 255, 255, 0.92); border-radius: 20px; padding: 14px 16px; box-shadow: 0 10px 22px rgba(255, 165, 199, 0.2); }
 .panel h3 { margin: 0 0 10px; color: #ff4c8a; }
 .field { margin-bottom: 10px; }
 .field label { font-size: 12px; color: #a35d76; display: block; margin-bottom: 4px; }
+.field input, .field textarea { width: 100%; border-radius: 12px; border: 1px solid rgba(255, 190, 210, 0.9); padding: 8px 10px; font-size: 13px; outline: none; background: #fff; box-sizing: border-box; }
+.field textarea { min-height: 80px; resize: vertical; }
 .value { font-size: 14px; color: #4b4b4b; }
 .muted { color: #b57a90; font-size: 13px; }
 .tag-list { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -383,7 +445,6 @@ main { flex: 1; display: flex; flex-direction: column; }
 .color-picker { width: 44px; height: 32px; padding: 0; border: 1px solid rgba(255, 190, 210, 0.9); border-radius: 8px; background: #fff; }
 .chip { display: inline-flex; align-items: center; padding: 4px 10px; border-radius: 999px; font-size: 12px; background: #ffeef5; color: #b05f7a; }
 .chip.primary { background: linear-gradient(135deg, #ff8bb3, #ff6fa0); color: #fff; }
-
 .version-list { display: flex; flex-direction: column; gap: 8px; }
 .version-item { display: flex; align-items: center; gap: 10px; background: #fff5f8; border-radius: 10px; padding: 8px 10px; }
 .version-item .dot { width: 10px; height: 10px; border-radius: 50%; background: #7ac7ff; }
@@ -391,10 +452,14 @@ main { flex: 1; display: flex; flex-direction: column; }
 .v-title { font-size: 13px; color: #613448; }
 .v-note { font-size: 12px; color: #b57a90; }
 .v-time { font-size: 12px; color: #b57a90; }
+.meta-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.exif-raw .exif-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 6px 10px; background: #fff7fb; padding: 8px; border-radius: 10px; max-height: 260px; overflow: auto; }
+.exif-raw .exif-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; font-size: 12px; color: #613448; }
+.exif-raw .k { color: #a35d76; }
+.exif-raw .v { color: #4b4b4b; }
 
 footer { text-align: center; font-size: 12px; color: #b57a90; padding: 12px 0 16px; }
 .loading { display: flex; align-items: center; justify-content: center; height: 100vh; color: #a35d76; background: linear-gradient(135deg, #ffeef5, #ffe5f0); }
-
 :deep(.pink-confirm .el-message-box__title) { color: #ff4c8a; }
 :deep(.pink-confirm .el-button--primary) { background: linear-gradient(135deg, #ff8bb3, #ff6fa0); border: none; }
 :deep(.pink-confirm .el-button--default) { border-color: #ffb6cf; color: #b05f7a; }
@@ -424,13 +489,13 @@ footer { text-align: center; font-size: 12px; color: #b57a90; padding: 12px 0 16
   .topbar .right { display: none; }
   .detail-layout { padding-inline: 12px; }
   .hero-img { max-height: 60vh; }
-  .image-actions { font-size: 12px; }
-  .mobile-actions { display: flex; }
+  .meta-actions { justify-content: flex-start; }
 }
 @media (max-width: 640px) {
   .tag-input { flex-direction: column; align-items: stretch; }
   .tag-input input { width: 100%; }
   .color-picker { width: 100%; max-width: 120px; }
   .panel { padding: 12px; }
+  .exif-raw .exif-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
 }
 </style>

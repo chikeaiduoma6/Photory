@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
@@ -112,6 +112,40 @@ watch(
 onMounted(() => {
   fetchImages()
 })
+
+/* 轮播逻辑 */
+const sliderImages = computed(() => images.value.slice(0, 8))
+const currentSlide = ref(0)
+const sliderTimer = ref<number | null>(null)
+const hasSlider = computed(() => sliderImages.value.length > 0)
+const nextSlide = () => {
+  if (!sliderImages.value.length) return
+  currentSlide.value = (currentSlide.value + 1) % sliderImages.value.length
+}
+const prevSlide = () => {
+  if (!sliderImages.value.length) return
+  currentSlide.value = (currentSlide.value - 1 + sliderImages.value.length) % sliderImages.value.length
+}
+const startSlider = () => {
+  stopSlider()
+  if (!sliderImages.value.length) return
+  sliderTimer.value = window.setInterval(nextSlide, 4000)
+}
+const stopSlider = () => {
+  if (sliderTimer.value !== null) {
+    clearInterval(sliderTimer.value)
+    sliderTimer.value = null
+  }
+}
+watch(
+  () => sliderImages.value.map(i => i.id).join(','),
+  () => {
+    currentSlide.value = 0
+    if (sliderImages.value.length) startSlider()
+    else stopSlider()
+  }
+)
+onUnmounted(stopSlider)
 </script>
 
 <template>
@@ -173,6 +207,32 @@ onMounted(() => {
           </nav>
         </div>
       </div>
+
+      <section v-if="hasSlider" class="carousel" @mouseenter="stopSlider" @mouseleave="startSlider">
+        <div class="carousel-head">
+          <div class="carousel-title">标签精选轮播</div>
+          <div class="carousel-actions">
+            <button class="pill ghost" @click="prevSlide">‹</button>
+            <button class="pill ghost" @click="nextSlide">›</button>
+          </div>
+        </div>
+        <div class="carousel-window">
+          <div class="carousel-track" :style="{ transform: `translateX(-${currentSlide * 100}%)` }">
+            <div
+              v-for="img in sliderImages"
+              :key="img.id"
+              class="slide"
+              @click="goDetail(img.id)"
+            >
+              <img :src="img.fullUrl" :alt="img.displayName" loading="lazy" @error="fallbackToRaw($event, img.fullUrl)" />
+              <div class="slide-mask">
+                <div class="slide-title">{{ img.displayName }}</div>
+                <div class="slide-meta">{{ img.created_at?.slice(0, 16) || '' }}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
 
       <section class="toolbar">
         <div class="view-switch">
@@ -245,6 +305,21 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 100vh; }
 .tag-pill { padding: 6px 10px; border-radius: 999px; border: 1px solid transparent; color: #b05f7a; display: inline-flex; align-items: center; gap: 6px; }
 .tag-pill .dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
 
+/* 轮播 */
+.carousel { padding: 10px 20px 8px; display: flex; flex-direction: column; gap: 8px; }
+.carousel-head { display: flex; align-items: center; justify-content: space-between; }
+.carousel-title { font-weight: 700; color: #ff3f87; }
+.carousel-actions { display: flex; gap: 8px; }
+.carousel-window { position: relative; overflow: hidden; border-radius: 16px; background: rgba(255, 255, 255, 0.9); box-shadow: 0 12px 24px rgba(255, 165, 199, 0.28); }
+.carousel-track { display: flex; transition: transform 0.45s ease; width: 100%; }
+.slide { min-width: 100%; position: relative; cursor: pointer; }
+.slide img { width: 100%; height: 300px; object-fit: cover; }
+.slide-mask { position: absolute; inset: 0; background: linear-gradient(180deg, transparent 55%, rgba(0,0,0,0.35)); display: flex; flex-direction: column; justify-content: flex-end; padding: 12px 14px; color: #fff; gap: 4px; }
+.slide-title { font-weight: 600; }
+.slide-meta { font-size: 12px; opacity: 0.9; }
+.pill { border: 1px solid rgba(255, 180, 205, 0.9); border-radius: 12px; padding: 4px 10px; background: #fff7fb; cursor: pointer; color: #b05f7a; }
+.pill.ghost:hover { background: #ffe2ef; }
+
 .toolbar { display: flex; justify-content: space-between; align-items: center; padding: 14px 20px 6px; flex-wrap: wrap; gap: 10px; }
 .view-switch, .sort { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .view-pill, .sort-pill { border: none; border-radius: 16px; padding: 8px 12px; background: #ffeef5; color: #b05f7a; cursor: pointer; }
@@ -304,6 +379,8 @@ footer { text-align: center; font-size: 12px; color: #b57a90; }
   .gallery.masonry { column-count: 2; }
   .toolbar { padding-inline: 12px; }
   .gallery-wrap { padding-inline: 12px; }
+  .carousel { padding-inline: 12px; }
+  .slide img { height: 240px; }
 }
 @media (max-width: 640px) {
   .gallery { grid-template-columns: repeat(2, minmax(0, 1fr)); }

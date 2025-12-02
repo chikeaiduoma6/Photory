@@ -18,7 +18,7 @@ const detail = ref<any>(null)
 const loading = ref(true)
 const aiLoading = ref(false)
 const aiTags = ref<string[]>([])
-const aiDescription = ref('这里是 AI 生成的图片描述，点击按钮可更新～')
+const aiDescription = ref('')
 const newTag = ref('')
 const newTagColor = ref(palette[0])
 
@@ -113,6 +113,7 @@ async function fetchDetail() {
     const res = await axios.get(`/api/v1/images/${route.params.id}`)
     detail.value = res.data
     aiTags.value = res.data.ai_tags || []
+    aiDescription.value = res.data.ai_description || ''
     editName.value = res.data.name || res.data.original_name || ''
     editDescription.value = res.data.description || ''
   } catch (err: any) {
@@ -122,6 +123,8 @@ async function fetchDetail() {
     loading.value = false
   }
 }
+
+
 
 function normalizeColor(raw?: string | null, idx = 0, name = '') {
   if (!raw) return palette[(idx + name.length) % palette.length]
@@ -174,14 +177,19 @@ function formatSize(size?: number) {
   return `${mb.toFixed(2)} MB`
 }
 
-function generateAiTags() {
+async function generateAiTags() {
   aiLoading.value = true
-  setTimeout(() => {
-    const base = ['风景', '人物', '动物', '海洋', '城市', '夜景', '花卉', '旅行', '日常']
-    aiTags.value = base.sort(() => 0.5 - Math.random()).slice(0, 3)
-    aiDescription.value = 'AI 生成：根据图像内容给出的标签与简短描述，后端接入模型后可替换为真实结果～'
+  try {
+    const res = await axios.post(`/api/v1/images/${route.params.id}/ai/analyze`)
+    aiTags.value = res.data.tags || []
+    aiDescription.value = res.data.caption || 'AI 已生成描述'
+    detail.value = res.data.item || detail.value
+    ElMessage.success('AI 分析完成')
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.message || 'AI 分析失败，请稍后再试')
+  } finally {
     aiLoading.value = false
-  }, 800)
+  }
 }
 
 async function saveMeta() {
@@ -379,7 +387,7 @@ onMounted(fetchDetail)
                 <span v-for="t in aiTags" :key="t" class="tag alt">{{ t }}</span>
                 <span v-if="!aiTags.length" class="muted">暂无 AI 标签</span>
               </div>
-              <div class="value">{{ aiDescription }}</div>
+              <div class="value">{{ aiDescription || '暂无AI描述' }}</div>
               <button class="pill-btn mini" :disabled="aiLoading" @click="generateAiTags">
                 {{ aiLoading ? '生成中...' : '更新 AI 分析' }}
               </button>

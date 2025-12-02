@@ -15,5 +15,17 @@ class Config:
 
     UPLOAD_DIR = os.getenv("UPLOAD_DIR", "/app/uploads")
     THUMB_DIR = os.getenv("THUMB_DIR", "/app/uploads/thumbs")
-    MAX_CONTENT_LENGTH = 20 * 1024 * 1024  # 20MB/文件
+    MAX_CONTENT_LENGTH = 20 * 1024 * 1024  # 20MB
     ALLOWED_IMAGE_EXTS = {"jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "heif"}
+
+    QWEN_API_KEY = os.getenv("QWEN_API_KEY", "")
+    QWEN_API_BASE = os.getenv(
+        "QWEN_API_BASE",
+        "https://dashscope.aliyuncs.com/compatible-mode/v1",  
+    )
+    QWEN_VISION_MODEL = os.getenv("QWEN_VISION_MODEL", "qwen-vl-max")
+
+    QWEN_CHAT_MODEL = os.getenv("QWEN_CHAT_MODEL", "qwen-turbo")
+
+    AI_TIMEOUT = int(os.getenv("AI_TIMEOUT", "60"))
+    AI_MAX_TAGS = int(os.getenv("AI_MAX_TAGS", "6"))

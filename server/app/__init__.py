@@ -6,6 +6,7 @@ from .extensions import bcrypt, db, jwt
 from .auth_routes import auth_bp
 from .images_routes import images_bp, _normalize_rel_path
 from .tags_routes import tags_bp
+from .albums_routes import albums_bp  # 导入相册路由蓝图
 from .models import User, Image
 
 try:
@@ -36,6 +37,7 @@ def create_app(config_class: type[Config] = Config) -> Flask:
     app.register_blueprint(auth_bp)
     app.register_blueprint(images_bp)
     app.register_blueprint(tags_bp)
+    app.register_blueprint(albums_bp)  # 注册相册路由蓝图
 
     with app.app_context():
         db.create_all()

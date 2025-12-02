@@ -4,18 +4,21 @@ import re
 import shutil
 import uuid
 import json
+import base64
 from datetime import datetime, date, time
 from fractions import Fraction
 from typing import List
 
+import requests  # 可能用于其他场景，保留
 from flask import Blueprint, current_app, jsonify, request, send_file
 from flask_jwt_extended import get_jwt_identity, verify_jwt_in_request
 from pillow_heif import read_heif, register_heif_opener
 from PIL import ExifTags, Image as PILImage, ImageEnhance, ImageOps
 from sqlalchemy import func, or_
+from openai import OpenAI
 
 from .extensions import db
-from .models import Image, ImageVersion, Tag, image_tags
+from .models import Image, ImageVersion, Tag, image_tags, ImageAIAnalysis
 
 images_bp = Blueprint("images", __name__, url_prefix="/api/v1/images")
 
@@ -501,7 +504,7 @@ def _image_file_exists(img: Image) -> bool:
 
 
 def _filter_existing(images: list[Image]) -> list[Image]:
-    """过滤磁盘缺失的图片；若缺失且未标记删除，则软删除以避免重复 404。"""
+    """过滤磁盘缺失的图片；若缺失且未标记删除，则软删除以避免重复 404"""
     kept: list[Image] = []
     missing = 0
     dirty = False
@@ -614,6 +617,13 @@ def _serialize_image(img: Image) -> dict:
     else:
         data["exif_raw"] = {}
     data["exif_display"] = _build_display_exif(img, data["exif_raw"])
+
+    ai = getattr(img, "ai_analysis", None)
+    data["ai_tags"] = ai.labels if ai else []
+    data["ai_description"] = ai.caption if ai else ""
+    data["ai_status"] = ai.status if ai else None
+    data["ai_model"] = ai.model if ai else None
+    data["ai_updated_at"] = ai.updated_at.isoformat() if ai else None
     return data
 
 
@@ -628,6 +638,212 @@ def _positive_int(value, default: int, max_value: int | None = None) -> int:
     return num
 
 
+def _list_param(name: str) -> list[str]:
+    vals: list[str] = []
+    for v in request.args.getlist(name):
+        vals.extend(str(v).split(","))
+    raw = request.args.get(name)
+    if raw:
+        vals.extend(str(raw).split(","))
+    return [s.strip() for s in vals if str(s).strip()]
+
+
+def _parse_date_param(key: str, end_of_day: bool = False) -> datetime | None:
+    raw = request.args.get(key)
+    if not raw:
+        return None
+    try:
+        dt = datetime.strptime(raw.strip(), "%Y-%m-%d")
+        if end_of_day:
+            return dt.replace(hour=23, minute=59, second=59, microsecond=999999)
+        return dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    except Exception:
+        return None
+
+
+# === AI (Qwen / DashScope) ===
+def _qwen_cfg():
+    """读取通义千问 / 百炼（DashScope）的配置。"""
+    return {
+        "api_key": current_app.config.get("QWEN_API_KEY", ""),
+        "api_base": (current_app.config.get("QWEN_API_BASE") or "https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip(
+            "/"
+        ),
+        "vision_model": current_app.config.get("QWEN_VISION_MODEL", "qwen-vl-max"),
+        "chat_model": current_app.config.get("QWEN_CHAT_MODEL", "qwen-turbo"),
+        "timeout": int(current_app.config.get("AI_TIMEOUT", 60)),
+        "max_tags": int(current_app.config.get("AI_MAX_TAGS", 6)),
+    }
+
+
+def _qwen_request_chat(model: str, messages: list[dict], extra_body: dict | None = None) -> dict:
+    """调用 DashScope OpenAI 兼容接口的 chat.completions，返回完整 JSON。"""
+    cfg = _qwen_cfg()
+    if not cfg["api_key"]:
+        raise RuntimeError("缺少 QWEN_API_KEY")
+
+    url = cfg["api_base"].rstrip("/") + "/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {cfg['api_key']}",
+        "Content-Type": "application/json",
+    }
+    payload: dict = {
+        "model": model,
+        "messages": messages,
+        "stream": False,
+    }
+    if extra_body:
+        payload.update(extra_body)
+
+    resp = requests.post(url, json=payload, headers=headers, timeout=cfg["timeout"])
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _qwen_vision(prompt: str, image_b64: str) -> str:
+    """使用 Qwen-VL 模型进行图像理解，返回模型原始文本输出。"""
+    cfg = _qwen_cfg()
+    data = _qwen_request_chat(
+        model=cfg["vision_model"],
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
+                ],
+            }
+        ],
+        extra_body={"temperature": 0.2},
+    )
+    choice = (data.get("choices") or [{}])[0].get("message", {})
+    content = choice.get("content", "")
+
+    # OpenAI 兼容接口下，content 可能是字符串或富文本数组
+    if isinstance(content, list):
+        parts: list[str] = []
+        for part in content:
+            if isinstance(part, dict):
+                txt = part.get("text")
+                if txt:
+                    parts.append(txt)
+        return "".join(parts)
+    return str(content or "")
+
+
+def _qwen_chat(messages: list[dict]) -> str:
+    """使用通义千问文本模型进行对话，返回 assistant 文本内容。"""
+    cfg = _qwen_cfg()
+    data = _qwen_request_chat(
+        model=cfg["chat_model"],
+        messages=messages,
+        extra_body={"temperature": 0.3},
+    )
+    choice = (data.get("choices") or [{}])[0].get("message", {})
+    content = choice.get("content", "")
+    if isinstance(content, list):
+        parts: list[str] = []
+        for part in content:
+            if isinstance(part, dict):
+                txt = part.get("text")
+                if txt:
+                    parts.append(txt)
+        return "".join(parts)
+    return str(content or "")
+
+
+def _parse_ai_json(text: str) -> tuple[list[str], str]:
+    """容错解析大模型输出，提取 tags 与 caption。"""
+    try_blocks: list[str] = []
+    if "```" in text:
+        for part in text.split("```"):
+            if "{" in part and "}" in part:
+                try_blocks.append(part)
+    try_blocks.append(text)
+
+    for block in try_blocks:
+        try:
+            obj = json.loads(block[block.index("{") : block.rindex("}") + 1])
+            tags = obj.get("tags") or obj.get("labels") or obj.get("keywords") or []
+            if isinstance(tags, str):
+                tags = [t.strip() for t in tags.replace("，", ",").split(",") if t.strip()]
+            caption = obj.get("caption") or obj.get("summary") or obj.get("reply") or ""
+            return tags, caption
+        except Exception:
+            continue
+
+    # 兜底：用换行或逗号切分
+    lines = [x.strip() for x in re.split(r"[\n,，]", text) if x.strip()]
+    caption = lines[0] if lines else ""
+    tags = lines[1:6]
+    return tags, caption
+
+
+def _run_ai_analysis(img: Image) -> tuple[list[str], str]:
+    """真正跑图片分析（生成标签 + 描述）的函数，内部已经改用 Qwen-VL。"""
+    cfg = _qwen_cfg()
+    rel = _normalize_rel_path(img.filename)
+    disk_path = os.path.join(current_app.config["UPLOAD_DIR"], rel) if rel else None
+    if not disk_path or not os.path.exists(disk_path):
+        raise FileNotFoundError("文件不存在")
+
+    with open(disk_path, "rb") as f:
+        b64_img = base64.b64encode(f.read()).decode()
+
+    prompt = (
+        "你是专业图片标注助手。请只输出 JSON："
+        '{"tags":["tag1","tag2",...],"caption":"用一句中文描述图片"}。'
+        f"标签请控制在 {cfg['max_tags']} 个以内，重点包括风景/人物/动物/场景等。"
+    )
+    raw = _qwen_vision(prompt, b64_img)
+    tags, caption = _parse_ai_json(raw)
+    return tags[: cfg["max_tags"]], caption.strip()
+
+
+def _upsert_ai_analysis(img: Image, tags: list[str], caption: str) -> ImageAIAnalysis:
+    """把 AI 生成的结果写回 image_ai_analysis 表。"""
+    ai = ImageAIAnalysis.query.filter_by(image_id=img.id).first()
+    if not ai:
+        ai = ImageAIAnalysis(image_id=img.id)
+        db.session.add(ai)
+    cfg = _qwen_cfg()
+    ai.model = cfg.get("vision_model") or "qwen-vl-max"
+    ai.labels = tags
+    ai.caption = caption
+    ai.status = "done"
+    ai.updated_at = datetime.utcnow()
+    return ai
+
+
+def _search_by_keywords(user_id: int, keywords: list[str], limit: int = 8) -> list[dict]:
+    """按关键词在当前用户图片中检索。"""
+    q = _query_user_images(user_id, include_deleted=False)
+    conds = []
+    for kw in keywords:
+        if not kw:
+            continue
+        like = f"%{kw}%"
+        conds.append(Image.name.ilike(like))
+        conds.append(Image.description.ilike(like))
+        conds.append(Image.original_name.ilike(like))
+        conds.append(Image.tags.any(Tag.name.ilike(like)))
+    if conds:
+        q = q.filter(or_(*conds))
+    items = q.order_by(Image.created_at.desc()).limit(limit).all()
+    return [
+        {
+            "id": it.id,
+            "name": it.name or it.original_name,
+            "tags": [t.name for t in it.tags],
+            "thumb_url": f"/api/v1/images/{it.id}/thumb",
+            "raw_url": f"/api/v1/images/{it.id}/raw",
+            "description": it.description,
+        }
+        for it in items
+    ]
+
+
+
 def _query_user_images(user_id: int, include_deleted=False):
     q = Image.query.filter_by(user_id=user_id)
     if not include_deleted:
@@ -636,11 +852,7 @@ def _query_user_images(user_id: int, include_deleted=False):
 
 
 def _get_user_image(image_id: int, user_id: int, include_deleted: bool) -> Image:
-    return (
-        _query_user_images(user_id, include_deleted)
-        .filter(Image.id == image_id)
-        .first_or_404()
-    )
+    return _query_user_images(user_id, include_deleted).filter(Image.id == image_id).first_or_404()
 
 
 def _remove_files(img: Image):
@@ -738,89 +950,24 @@ def _apply_edits(pil: PILImage.Image, payload: dict) -> PILImage.Image:
     exposure = float(adjustments.get("exposure") or 0)
     contrast = float(adjustments.get("contrast") or 0)
     saturation = float(adjustments.get("saturation") or 0)
-    warm = float(adjustments.get("temperature") or 0)
-    if bright or exposure:
-        factor = 1 + (bright + exposure * 0.6) / 100
-        img = ImageEnhance.Brightness(img).enhance(max(0, factor))
+
+    if bright:
+        enhancer = ImageEnhance.Brightness(img)
+        img = enhancer.enhance(1 + bright / 100)
+    if exposure:
+        enhancer = ImageEnhance.Brightness(img)
+        img = enhancer.enhance(1 + exposure / 50)
     if contrast:
-        img = ImageEnhance.Contrast(img).enhance(max(0, 1 + contrast / 100))
+        enhancer = ImageEnhance.Contrast(img)
+        img = enhancer.enhance(1 + contrast / 100)
     if saturation:
-        img = ImageEnhance.Color(img).enhance(max(0, 1 + saturation / 100))
-    if warm:
-        r, g, b = img.split()
-        r = r.point(lambda p: min(255, p * (1 + warm / 200)))
-        b = b.point(lambda p: min(255, p * (1 - warm / 400)))
-        img = PILImage.merge("RGB", (r, g, b))
+        enhancer = ImageEnhance.Color(img)
+        img = enhancer.enhance(1 + saturation / 100)
 
     return img
 
 
-def _save_version_entry(img: Image, note: str) -> None:
-    try:
-        rel = _normalize_rel_path(img.filename)
-        if not rel:
-            return
-        src = os.path.join(current_app.config["UPLOAD_DIR"], rel)
-        if not os.path.exists(src):
-            return
-        token = uuid.uuid4().hex
-        ext = os.path.splitext(rel)[-1] or ".jpg"
-        ver_rel = _normalize_rel_path(os.path.join(os.path.dirname(rel), f"ver_{token}{ext}"))
-        ver_disk = os.path.join(current_app.config["UPLOAD_DIR"], ver_rel)
-        shutil.copy2(src, ver_disk)
-        thumb_rel = None
-        if img.thumb_path:
-            thumb_src = os.path.join(current_app.config["THUMB_DIR"], _normalize_rel_path(img.thumb_path))
-            if os.path.exists(thumb_src):
-                thumb_rel = _normalize_rel_path(os.path.join(os.path.dirname(img.thumb_path), f"ver_{token}_thumb.jpg"))
-                shutil.copy2(thumb_src, os.path.join(current_app.config["THUMB_DIR"], thumb_rel))
-        ver_row = ImageVersion(image_id=img.id, name=img.name, note=note, filename=ver_rel, thumb_path=thumb_rel)
-        db.session.add(ver_row)
-    except Exception:
-        current_app.logger.exception("save version entry failed")
-
-
-def _save_image_and_thumb(img: PILImage.Image, dest_rel: str, thumb_rel: str | None, mime: str) -> tuple[int, int, int, str | None]:
-    disk_path = os.path.join(current_app.config["UPLOAD_DIR"], dest_rel)
-    os.makedirs(os.path.dirname(disk_path), exist_ok=True)
-    img = ImageOps.exif_transpose(img)
-    img.save(disk_path, format="JPEG", quality=92)
-    width, height = img.size
-    size = os.path.getsize(disk_path)
-    thumb_path = None
-    if thumb_rel:
-        thumb_disk = os.path.join(current_app.config["THUMB_DIR"], thumb_rel)
-        os.makedirs(os.path.dirname(thumb_disk), exist_ok=True)
-        try:
-            _save_thumb(disk_path, thumb_disk)
-            thumb_path = thumb_rel
-        except Exception:
-            thumb_path = None
-    return width, height, size, thumb_path
-
-
-def _list_param(name: str) -> list[str]:
-    vals: list[str] = []
-    for v in request.args.getlist(name):
-        vals.extend(str(v).split(","))
-    raw = request.args.get(name)
-    if raw:
-        vals.extend(str(raw).split(","))
-    return [s.strip() for s in vals if str(s).strip()]
-
-
-def _parse_date_param(key: str, end_of_day: bool = False) -> datetime | None:
-    raw = request.args.get(key)
-    if not raw:
-        return None
-    try:
-        dt = datetime.strptime(raw.strip(), "%Y-%m-%d")
-        if end_of_day:
-            return dt.replace(hour=23, minute=59, second=59, microsecond=999999)
-        return dt.replace(hour=0, minute=0, second=0, microsecond=0)
-    except Exception:
-        return None
-
+# ================= 路由 =================
 
 @images_bp.post("/upload")
 def upload():
@@ -1321,3 +1468,93 @@ def serve_thumb(image_id: int):
     if not disk_path or not os.path.exists(disk_path):
         return jsonify({"message": "文件不存在"}), 404
     return send_file(disk_path, mimetype=img.mime_type)
+
+
+# === AI 路由 ===
+@images_bp.get("/<int:image_id>/ai")
+def get_ai_result(image_id: int):
+    user_id = _current_user_id()
+    img = _get_user_image(image_id, user_id, include_deleted=False)
+    ai = img.ai_analysis
+    return jsonify(
+        {
+            "message": "ok",
+            "tags": ai.labels if ai else [],
+            "caption": ai.caption if ai else "",
+            "status": ai.status if ai else "none",
+            "item": _serialize_image(img),
+        }
+    )
+
+
+@images_bp.post("/<int:image_id>/ai/analyze")
+def analyze_image(image_id: int):
+    user_id = _current_user_id()
+    img = _get_user_image(image_id, user_id, include_deleted=False)
+    try:
+        tags, caption = _run_ai_analysis(img)
+        ai = _upsert_ai_analysis(img, tags, caption)
+        db.session.commit()
+        return jsonify(
+            {
+                "message": "ok",
+                "tags": ai.labels or [],
+                "caption": ai.caption or "",
+                "item": _serialize_image(img),
+            }
+        )
+    except Exception as exc:
+        db.session.rollback()
+        current_app.logger.exception("ai analyze failed")
+        return jsonify({"message": "AI 分析失败", "error": str(exc)}), 500
+
+
+@images_bp.post("/ai/chat")
+def ai_chat_search():
+    user_id = _current_user_id()
+    data = request.get_json() or {}
+    messages = data.get("messages") or []
+    user_text = ""
+    for m in reversed(messages):
+        if str(m.get("role")) == "user":
+            user_text = str(m.get("content") or "")
+            break
+    if not user_text:
+        return jsonify({"message": "缺少用户输入"}), 400
+
+    try:
+        # 先用小模型抽关键词
+        kw_prompt = (
+            "请把这句话提炼 3~5 个中文关键词，用 JSON 返回："
+            '{"keywords":["k1","k2"],"style":[]}。'
+            f"输入：{user_text}"
+        )
+        kw_raw = _qwen_chat(
+            [
+                {"role": "system", "content": "你是检索关键词提取器，只返回 JSON。"},
+                {"role": "user", "content": kw_prompt},
+            ]
+        )
+        keywords, _ = _parse_ai_json(kw_raw)
+        if not keywords:
+            keywords = [user_text.strip()][:3]
+
+        results = _search_by_keywords(user_id, keywords, limit=8)
+
+        # 然后再让大模型用对话方式总结检索结果
+        reply_prompt = (
+            "你是图片管家，根据候选图片列出最相关的项，用中文简短回复。"
+            "只引用给定的图片 id 和名称，不要编造。"
+            f"用户问：{user_text}\n候选：{json.dumps(results, ensure_ascii=False)}"
+        )
+        reply = _qwen_chat(
+            [
+                {"role": "system", "content": "你是照片助理，口吻简洁、友好。"},
+                {"role": "user", "content": reply_prompt},
+            ]
+        )
+
+        return jsonify({"message": "ok", "reply": reply, "keywords": keywords, "images": results})
+    except Exception as exc:
+        current_app.logger.exception("ai chat search failed")
+        return jsonify({"message": "AI 检索失败", "error": str(exc)}), 500

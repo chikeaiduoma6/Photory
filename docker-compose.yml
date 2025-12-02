@@ -32,6 +32,14 @@ services:
       DATABASE_URL: mysql+pymysql://${MYSQL_USER:-photouser}:${MYSQL_PASSWORD:-photopass}@db:3306/${MYSQL_DATABASE:-photomanager}
       UPLOAD_DIR: /data/uploads
       THUMB_DIR: /data/thumbs
+      QWEN_API_KEY: ${QWEN_API_KEY}
+      QWEN_API_BASE: ${QWEN_API_BASE:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      QWEN_VISION_MODEL: ${QWEN_VISION_MODEL:-qwen-vl-max}
+      QWEN_CHAT_MODEL: ${QWEN_CHAT_MODEL:-qwen-turbo}
+      AI_TIMEOUT: ${AI_TIMEOUT:-60}
+      AI_MAX_TAGS: ${AI_MAX_TAGS:-6}
+
+
     ports:
       - "5000:5000"
     volumes:

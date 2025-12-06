@@ -17,8 +17,8 @@ interface Image {
   taken_at?: string
   created_at: string
   thumb_path?: string
-  thumb_url?: string
   visibility: string
+  thumb_url?: string
   tags?: string[]
   tag_objects?: { id: number; name: string; color?: string | null }[]
 }
@@ -33,15 +33,15 @@ interface Album {
   cover_image?: Image
 }
 
+
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
-const username = computed(() => authStore.user?.username || '访客')
+const username = computed(() => authStore.user?.username || '鐠佸灝顓?)
 
 const apiBase = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '')
 const withBase = (path: string) => (!path ? '' : path.startsWith('http') ? path : `${apiBase}${path}`)
 const tokenParam = computed(() => (authStore.token ? `?jwt=${authStore.token}` : ''))
-
 const albumId = computed(() => parseInt(route.params.id as string))
 const album = ref<Album | null>(null)
 const images = ref<Image[]>([])
@@ -66,7 +66,7 @@ const selectingImages = ref(false)
 const availablePage = ref(1)
 const availablePageSize = ref(30)
 const availableTotal = ref(0)
-const viewMode = ref<'grid' | 'list' | 'masonry' | 'large'>('grid')
+const viewMode = ref('grid') // 濞ｈ濮炲ù蹇氼潔濡€崇础閿涙rid(缂冩垶鐗?閵嗕勾ist(閸掓銆?閵嗕沟asonry(閻庢垵绔峰ù?閵嗕勾arge(婢堆冨幢閻?
 const viewModeClass = computed(() => {
   if (viewMode.value === 'grid') return 'images-grid'
   if (viewMode.value === 'list') return 'images-list'
@@ -81,28 +81,28 @@ const coverThumb = (img?: Image | null) => {
   return withBase(raw) + tokenParam.value
 }
 
-// 进入轮播模式
+// 濞ｈ濮炴潻娑樺弳鏉烆喗鎸卞Ο鈥崇础閻ㄥ嫬鍤遍弫?
 function enterCarouselMode() {
   if (images.value.length > 0) {
     currentImageIndex.value = 0
     carouselVisible.value = true
   } else {
-    ElMessage.warning('相册中没有图片，无法进入轮播模式')
+    ElMessage.warning('閻╃鍞芥稉顓熺梾閺堝娴橀悧鍥风礉閺冪姵纭舵潻娑樺弳鏉烆喗鎸卞Ο鈥崇础')
   }
 }
 
 const links = [
-  { label: '首页', icon: '🏠', path: '/' },
-  { label: '搜索引擎', icon: '🔍', path: '/search' },
-  { label: '上传中心', icon: '☁️', path: '/upload' },
-  { label: '标签', icon: '🏷️', path: '/tags' },
-  { label: '文件夹', icon: '📁', path: '/folders' },
-  { label: '相册', icon: '📚', path: '/albums' },
-  { label: '智能分类', icon: '🧠', path: '/smart' },
-  { label: 'AI 工作台', icon: '🤖', path: '/ai' },
-  { label: '任务中心', icon: '✅', path: '/tasks' },
-  { label: '回收站', icon: '🗑️', path: '/recycle' },
-  { label: '设置', icon: '⚙️', path: '/settings' },
+  { label: '妫ｆ牠銆?, icon: '棣冨綌', path: '/' },
+  { label: '閹兼粎鍌ㄥ鏇熸惛', icon: '棣冩敺', path: '/search' },
+  { label: '娑撳﹣绱舵稉顓炵妇', icon: '閳戒緤绗?, path: '/upload' },
+  { label: '閺嶅洨顒?, icon: '棣冨娇閿?, path: '/tags' },
+  { label: '閺傚洣娆㈡径?, icon: '棣冩惂', path: '/folders' },
+  { label: '閻╃鍞?, icon: '棣冩憥', path: '/albums' },
+  { label: '閺呴缚鍏橀崚鍡欒', icon: '棣冾潵', path: '/smart' },
+  { label: 'AI 瀹搞儰缍旈崣?, icon: '棣冾樆', path: '/ai' },
+  { label: '娴犺濮熸稉顓炵妇', icon: '棣冃?, path: '/tasks' },
+  { label: '閸ョ偞鏁圭粩?, icon: '棣冩閿?, path: '/recycle' },
+  { label: '鐠佸墽鐤?, icon: '閳挎瑱绗?, path: '/settings' },
 ]
 
 async function fetchAlbum() {
@@ -111,7 +111,7 @@ async function fetchAlbum() {
     const res = await axios.get(`/api/v1/albums/${albumId.value}`)
     album.value = res.data.album
   } catch (e: any) {
-    ElMessage.error(e?.response?.data?.message || '获取相册信息失败')
+    ElMessage.error(e?.response?.data?.message || '閼惧嘲褰囬惄绋垮斀娣団剝浼呮径杈Е')
     router.push('/albums')
   } finally {
     loading.value = false
@@ -131,7 +131,7 @@ async function fetchAlbumImages() {
     images.value = res.data.items
     total.value = res.data.total
   } catch (e: any) {
-    ElMessage.error(e?.response?.data?.message || '获取相册图片失败')
+    ElMessage.error(e?.response?.data?.message || '鑾峰彇鐩稿唽鍥剧墖澶辫触')
   } finally {
     imageLoading.value = false
   }
@@ -140,11 +140,11 @@ async function fetchAlbumImages() {
 async function removeImageFromAlbum(imageId: number) {
   try {
     await axios.delete(`/api/v1/albums/${albumId.value}/images/${imageId}`)
-    ElMessage.success('图片已从相册中移除')
+    ElMessage.success('鍥剧墖宸蹭粠鐩稿唽涓Щ闄?)
     await fetchAlbumImages()
-    await fetchAlbum()
+    await fetchAlbum() // 閺囧瓨鏌婇惄绋垮斀娣団剝浼呴敍鍫濇禈閻楀洦鏆熼柌蹇ョ礆
   } catch (e: any) {
-    ElMessage.error(e?.response?.data?.message || '移除图片失败')
+    ElMessage.error(e?.response?.data?.message || '缁夊娅庨崶鍓у婢惰精瑙?)
   }
 }
 
@@ -161,8 +161,8 @@ async function fetchAvailableImages() {
     availableImages.value = res.data.items
     availableTotal.value = res.data.total
   } catch (e: any) {
-    console.error('获取图片列表失败:', e)
-    ElMessage.error(e?.response?.data?.message || '获取图片列表失败')
+    console.error('閼惧嘲褰囬崶鍓у閸掓銆冩径杈Е:', e)
+    ElMessage.error(e?.response?.data?.message || '閼惧嘲褰囬崶鍓у閸掓銆冩径杈Е')
   } finally {
     selectingImages.value = false
   }
@@ -170,23 +170,23 @@ async function fetchAvailableImages() {
 
 async function addImagesToAlbum() {
   if (selectedImages.value.length === 0) {
-    ElMessage.warning('请选择要添加的图片')
+    ElMessage.warning('鐠囩兘鈧瀚ㄧ憰浣瑰潑閸旂姷娈戦崶鍓у')
     return
   }
-
+  
   const addingImages = [...selectedImages.value]
   selectedImages.value = []
   addImageModalVisible.value = false
-
+  
   try {
     for (const imageId of addingImages) {
       await axios.post(`/api/v1/albums/${albumId.value}/images/${imageId}`)
     }
-    ElMessage.success(`成功添加 ${addingImages.length} 张图片到相册`)
+    ElMessage.success(`閹存劕濮涘ǎ璇插${addingImages.length}瀵姴娴橀悧鍥у煂閻╃鍞絗)
     await fetchAlbumImages()
     await fetchAlbum()
   } catch (e: any) {
-    ElMessage.error(e?.response?.data?.message || '添加图片失败')
+    ElMessage.error(e?.response?.data?.message || '濞ｈ濮為崶鍓у婢惰精瑙?)
   }
 }
 
@@ -211,6 +211,7 @@ function handleAvailablePageChange(newPage: number) {
 function openImageViewer(index: number) {
   currentImageIndex.value = index
   carouselVisible.value = true
+  // 绾喕绻氭い鐢告桨濠婃艾濮╅崚浼淬€婇柈?
   window.scrollTo(0, 0)
 }
 
@@ -223,11 +224,14 @@ function openAddImageModal() {
   fetchAvailableImages()
 }
 
+
+
 function handlePageChange(newPage: number) {
   page.value = newPage
   fetchAlbumImages()
 }
 
+// 閺嶇厧绱￠崠鏍ㄦ）閺堢喎鍤遍弫?
 function formatDate(dateString: string): string {
   if (!dateString) return ''
   return dateString.slice(0, 10)
@@ -249,10 +253,10 @@ watch(() => albumId.value, () => {
   <div class="dashboard album-detail-page">
     <aside class="sidebar">
       <div class="logo">
-        <div class="icon">📸</div>
+        <div class="icon">棣冩懗</div>
         <div class="text">
           <h1>Photory</h1>
-          <p>记录每一份美好，让瞬间变成永恒~</p>
+          <p>鐠佹澘缍嶆稉鏍？濮ｅ繋绔存禒鐣岀法婵傛枻绱濈拋鈺冪仜闂傛潙褰夐幋鎰閹帪缍?/p>
         </div>
       </div>
       <nav>
@@ -262,24 +266,24 @@ watch(() => albumId.value, () => {
       </nav>
     </aside>
     <main>
-      <header class="mobile-topbar">
-        <button class="icon-btn ghost" @click="toggleNav">☰</button>
+            <header class="mobile-topbar">
+        <button class="icon-btn ghost" @click="toggleNav">menu</button>
         <div class="mobile-brand">
-          <span class="logo-mini">📸</span>
-          <span>相册详情</span>
+          <span class="logo-mini">logo</span>
+          <span>鐩稿唽璇︽儏</span>
         </div>
-        <button class="icon-btn ghost" @click="go('/albums')">←</button>
+        <button class="icon-btn ghost" @click="go('/albums')">back</button>
       </header>
       <header class="topbar">
         <div class="left">
-          <button class="back-btn ghost" @click="go('/albums')">← 返回</button>
+          <button class="back-btn ghost" @click="go('/albums')">鐚拑绗?鏉╂柨娲?/button>
           <div class="title-container">
-            <div class="title">{{ album?.title }} · 相册详情</div>
-            <div class="subtitle">创建于 {{ album?.created_at.slice(0, 10) }} · 共 {{ album?.image_count }} 张图片</div>
+            <div class="title">{{ album?.title }} 璺?閻╃鍞界拠锔藉剰</div>
+            <div class="subtitle">閸掓稑缂撴禍?{{ album?.created_at.slice(0, 10) }} 璺?閸?{{ album?.image_count }} 瀵姴娴橀悧?/div>
           </div>
         </div>
         <div class="right">
-          <span class="welcome">欢迎你，亲爱的 Photory 用户 {{ username }}</span>
+          <span class="welcome">濞嗐垼绻嬫担鐙呯礉娴滆尙鍩嶉惃?Photory 閻劍鍩?{{ username }}</span>
         </div>
       </header>
       <div class="drawer" :class="{ open: navOpen }">
@@ -287,13 +291,13 @@ watch(() => albumId.value, () => {
         <div class="drawer-panel">
           <div class="drawer-head">
             <div class="brand">
-              <div class="icon">📸</div>
+              <div class="icon">棣冩懗</div>
               <div class="text">
                 <h1>Photory</h1>
-                <p>专属相册</p>
+                <p>娑撴挸鐫橀惄绋垮斀</p>
               </div>
             </div>
-            <button class="icon-btn ghost" @click="closeNav">✖</button>
+            <button class="icon-btn ghost" @click="closeNav">閴?/button>
           </div>
           <nav>
             <a v-for="item in links" :key="item.path" :class="{ active: isActive(item.path) }" @click="go(item.path)">
@@ -302,111 +306,111 @@ watch(() => albumId.value, () => {
           </nav>
         </div>
       </div>
-
+      
       <section class="album-info-section">
-        <div v-if="loading" class="loading-box">加载中...</div>
+        <div v-if="loading" class="loading-box">閸旂姾娴囨稉?..</div>
         <div v-else class="album-info">
           <div
             class="cover"
             :style="{ backgroundImage: album?.cover_image ? `url('${coverThumb(album?.cover_image)}')` : undefined }"
           >
-            <span v-if="!album?.cover_image" class="cover-placeholder">📚</span>
+            <span v-if="!album?.cover_image" class="cover-placeholder">棣冩憥</span>
           </div>
           <div class="info">
             <h2>{{ album?.title }}</h2>
-            <p class="meta">创建于 {{ album?.created_at.slice(0, 10) }}</p>
-            <p class="count">共 {{ album?.image_count }} 张图片</p>
+            <p class="meta">閸掓稑缂撴禍?{{ album?.created_at.slice(0, 10) }}</p>
+            <p class="count">閸?{{ album?.image_count }} 瀵姴娴橀悧?/p>
             <div class="actions">
               <button class="btn primary" @click="openAddImageModal">
-                + 添加图片到相册
+                + 濞ｈ濮為崶鍓у閸掓壆娴夐崘?
               </button>
             </div>
           </div>
         </div>
       </section>
-
+      
       <section class="images-section">
         <div class="section-header">
-          <h3>相册图片</h3>
+          <h3>閻╃鍞介崶鍓у</h3>
           <div class="actions-bar">
             <div class="view-options">
-              <span>浏览模式：</span>
-              <button
-                class="view-btn"
-                :class="{ active: viewMode === 'grid' }"
+              <span>濞村繗顫嶅Ο鈥崇础閿?/span>
+              <button 
+                class="view-btn" 
+                :class="{ active: viewMode === 'grid' }" 
                 @click="viewMode = 'grid'"
               >
-                🖼️ 网格
+                棣冩惖 缂冩垶鐗?
               </button>
-              <button
-                class="view-btn"
-                :class="{ active: viewMode === 'list' }"
+              <button 
+                class="view-btn" 
+                :class="{ active: viewMode === 'list' }" 
                 @click="viewMode = 'list'"
               >
-                📋 列表
+                棣冩憫 閸掓銆?
               </button>
-              <button
-                class="view-btn"
-                :class="{ active: viewMode === 'masonry' }"
+              <button 
+                class="view-btn" 
+                :class="{ active: viewMode === 'masonry' }" 
                 @click="viewMode = 'masonry'"
               >
-                🌊 瀑布流
+                棣冨癄 閻庢垵绔峰ù?
               </button>
-              <button
-                class="view-btn"
-                :class="{ active: viewMode === 'large' }"
+              <button 
+                class="view-btn" 
+                :class="{ active: viewMode === 'large' }" 
                 @click="viewMode = 'large'"
               >
-                📷 大卡片
+                棣冩懖 婢堆冨幢閻?
               </button>
             </div>
             <div class="sort-options">
-              <span>排序方式：</span>
-              <select v-model="sortOrder" @change="fetchAlbumImages" class="sort-select">
-                <optgroup label="添加时间">
-                  <option value="added_desc">晚到早</option>
-                  <option value="added_asc">早到晚</option>
-                </optgroup>
-                <optgroup label="上传时间">
-                  <option value="created_desc">晚到早</option>
-                  <option value="oldest">早到晚</option>
-                </optgroup>
-                <optgroup label="图片名称">
-                  <option value="name_asc">A-Z</option>
-                  <option value="name_desc">Z-A</option>
-                </optgroup>
-                <optgroup label="拍摄时间">
-                  <option value="taken_desc">晚到早</option>
-                  <option value="taken_asc">早到晚</option>
-                </optgroup>
-              </select>
-            </div>
-            <button
-              class="btn primary"
-              @click="enterCarouselMode"
+                <span>閹烘帒绨弬鐟扮础閿?/span>
+                <select v-model="sortOrder" @change="fetchAlbumImages" class="sort-select">
+                  <optgroup label="濞ｈ濮為弮鍫曟？">
+                    <option value="added_desc">閺呮艾鍩岄弮?/option>
+                    <option value="added_asc">閺冣晛鍩岄弲?/option>
+                  </optgroup>
+                  <optgroup label="娑撳﹣绱堕弮鍫曟？">
+                    <option value="created_desc">閺呮艾鍩岄弮?/option>
+                    <option value="oldest">閺冣晛鍩岄弲?/option>
+                  </optgroup>
+                  <optgroup label="閸ュ墽澧栭崥宥囆?>
+                    <option value="name_asc">A-Z</option>
+                    <option value="name_desc">Z-A</option>
+                  </optgroup>
+                  <optgroup label="閹峰秵鎲氶弮鍫曟？">
+                    <option value="taken_desc">閺呮艾鍩岄弮?/option>
+                    <option value="taken_asc">閺冣晛鍩岄弲?/option>
+                  </optgroup>
+                </select>
+              </div>
+            <button 
+              class="btn primary" 
+              @click="enterCarouselMode" 
               :disabled="images.length === 0"
             >
-              🎞 进入轮播模式
+              棣冨箑 鏉╂稑鍙嗘潪顔芥尡濡€崇础
             </button>
           </div>
         </div>
-
-        <div v-if="imageLoading" class="loading-box">加载图片中...</div>
+        
+        <div v-if="imageLoading" class="loading-box">閸旂姾娴囬崶鍓у娑?..</div>
         <div v-else-if="!images.length" class="empty-box">
-          <div>相册中还没有图片，快去添加吧！</div>
+          <div>閻╃鍞芥稉顓＄箷濞屸剝婀侀崶鍓у閿涘苯鎻╅崢缁樺潑閸旂姴鎯傞敍?/div>
         </div>
         <div v-else class="images-container" :class="viewModeClass">
           <div class="image-card" v-for="(image, index) in images" :key="image.id">
             <div class="image-wrapper" @click="openImageViewer(index)">
               <img :src="imageThumbUrl(image.id)" :alt="image.original_name" />
               <div class="image-actions">
-                <button class="icon-btn danger" @click.stop="removeImageFromAlbum(image.id)">🗑️</button>
+                <button class="icon-btn danger" @click.stop="removeImageFromAlbum(image.id)">棣冩閿?/button>
               </div>
             </div>
             <div class="image-info">
               <div class="image-name">{{ image.original_name }}</div>
               <div class="image-meta basic-meta">
-                <span class="meta-item">上传: {{ formatDate(image.created_at) }}</span>
+                <span class="meta-item">娑撳﹣绱? {{ formatDate(image.created_at) }}</span>
                 <div class="tag-list" v-if="image.tag_objects?.length">
                   <span class="tag-chip" v-for="tag in image.tag_objects" :key="tag.id">
                     {{ tag.name }}
@@ -414,120 +418,120 @@ watch(() => albumId.value, () => {
                 </div>
               </div>
               <div v-if="viewMode === 'list'" class="image-meta">
-                <span class="meta-item">尺寸: {{ image.width }} × {{ image.height }}</span>
-                <span class="meta-item">大小: {{ image.size }}</span>
-                <span class="meta-item">创建日期: {{ formatDate(image.created_at) }}</span>
+                <span class="meta-item">鐏忓搫顕? {{ image.width }} 鑴?{{ image.height }}</span>
+                <span class="meta-item">婢堆冪毈: {{ image.size }}</span>
+                <span class="meta-item">閸掓稑缂撻弮銉︽埂: {{ formatDate(image.created_at) }}</span>
               </div>
             </div>
           </div>
         </div>
-
+        
         <div class="pagination" v-if="total > pageSize">
-          <button
-            class="page-btn"
-            :disabled="page === 1"
+          <button 
+            class="page-btn" 
+            :disabled="page === 1" 
             @click="handlePageChange(page - 1)"
           >
-            上一页
+            娑撳﹣绔存い?
           </button>
-          <span class="page-info">第 {{ page }} 页 / 共 {{ Math.ceil(total / pageSize) }} 页</span>
-          <button
-            class="page-btn"
-            :disabled="page >= Math.ceil(total / pageSize)"
+          <span class="page-info">缁?{{ page }} 妞?/ 閸?{{ Math.ceil(total / pageSize) }} 妞?/span>
+          <button 
+            class="page-btn" 
+            :disabled="page >= Math.ceil(total / pageSize)" 
             @click="handlePageChange(page + 1)"
           >
-            下一页
+            娑撳绔存い?
           </button>
         </div>
       </section>
-
-      <!-- 添加图片模态框 -->
+      
+      <!-- 濞ｈ濮為崶鍓у濡剝鈧焦顢?-->
       <div class="modal-overlay" v-if="addImageModalVisible" @click="addImageModalVisible = false">
         <div class="modal-container" @click.stop>
           <div class="modal-header">
-            <h3>添加图片到相册</h3>
-            <button class="modal-close" @click="addImageModalVisible = false">✖</button>
+            <h3>濞ｈ濮為崶鍓у閸掓壆娴夐崘?/h3>
+            <button class="modal-close" @click="addImageModalVisible = false">閴?/button>
           </div>
           <div class="modal-body">
-            <div v-if="selectingImages" class="loading-box">加载图片中...</div>
+            <div v-if="selectingImages" class="loading-box">閸旂姾娴囬崶鍓у娑?..</div>
             <div v-else-if="!availableImages.length" class="empty-box">
-              <div>没有找到可用的图片</div>
+              <div>濞屸剝婀侀幍鎯у煂閸欘垳鏁ら惃鍕禈閻?/div>
             </div>
             <div v-else class="available-images-grid">
-              <div
-                class="available-image-card"
-                v-for="image in availableImages"
+              <div 
+                class="available-image-card" 
+                v-for="image in availableImages" 
                 :key="image.id"
                 :class="{ selected: isImageSelected(image.id) }"
                 @click="toggleImageSelection(image.id)"
               >
                 <div class="image-wrapper">
-                  <img :src="imageThumbUrl(image.id)" :alt="image.original_name" />
-                  <div class="selection-indicator" v-if="isImageSelected(image.id)">✔</div>
+                <img :src="imageThumbUrl(image.id)" :alt="image.original_name" />
+                  <div class="selection-indicator" v-if="isImageSelected(image.id)">閴?/div>
                 </div>
               </div>
             </div>
-
+            
             <div class="modal-pagination" v-if="availableTotal > availablePageSize">
-              <button
-                class="page-btn"
-                :disabled="availablePage === 1"
+              <button 
+                class="page-btn" 
+                :disabled="availablePage === 1" 
                 @click="handleAvailablePageChange(availablePage - 1)"
               >
-                上一页
+                娑撳﹣绔存い?
               </button>
-              <span class="page-info">第 {{ availablePage }} 页 / 共 {{ Math.ceil(availableTotal / availablePageSize) }} 页</span>
-              <button
-                class="page-btn"
-                :disabled="availablePage >= Math.ceil(availableTotal / availablePageSize)"
+              <span class="page-info">缁?{{ availablePage }} 妞?/ 閸?{{ Math.ceil(availableTotal / availablePageSize) }} 妞?/span>
+              <button 
+                class="page-btn" 
+                :disabled="availablePage >= Math.ceil(availableTotal / availablePageSize)" 
                 @click="handleAvailablePageChange(availablePage + 1)"
               >
-                下一页
+                娑撳绔存い?
               </button>
             </div>
           </div>
           <div class="modal-footer">
-            <button class="btn cancel" @click="addImageModalVisible = false">取消</button>
+            <button class="btn cancel" @click="addImageModalVisible = false">閸欐牗绉?/button>
             <button class="btn primary" @click="addImagesToAlbum" :disabled="selectedImages.length === 0">
-              添加选中图片 ({{ selectedImages.length }})
+              濞ｈ濮為柅澶夎厬閸ュ墽澧?({{ selectedImages.length }})
             </button>
           </div>
         </div>
       </div>
-
-      <!-- 图片轮播组件 -->
+      
+      <!-- 閸ュ墽澧栨潪顔芥尡缂佸嫪娆?-->
       <div class="carousel-overlay" v-if="carouselVisible" @click="closeImageViewer">
         <div class="carousel-container" @click.stop>
-          <button class="carousel-close" @click="closeImageViewer">✖</button>
+          <button class="carousel-close" @click="closeImageViewer">閴?/button>
           <div class="carousel-content">
-            <img
-              :src="imageRawUrl(images[currentImageIndex].id)"
+            <img 
+              :src="imageRawUrl(images[currentImageIndex].id)" 
               :alt="images[currentImageIndex].original_name"
               class="carousel-image"
             />
           </div>
           <div class="carousel-nav">
-            <button
-              class="nav-btn"
-              :disabled="currentImageIndex === 0"
+            <button 
+              class="nav-btn" 
+              :disabled="currentImageIndex === 0" 
               @click="currentImageIndex--"
             >
-              ◀
+              閳尖偓閿?
             </button>
             <span class="nav-info">{{ currentImageIndex + 1 }} / {{ images.length }}</span>
-            <button
-              class="nav-btn"
-              :disabled="currentImageIndex === images.length - 1"
+            <button 
+              class="nav-btn" 
+              :disabled="currentImageIndex === images.length - 1" 
               @click="currentImageIndex++"
             >
-              ▶
+              閳昏绗?
             </button>
           </div>
         </div>
       </div>
-
+      
       <div class="footer-wrapper">
-        <footer>2025 Designed by hyk 用心记录每一份美好~</footer>
+        <footer>2025 Designed by hyk 閻劌绺剧拋鏉跨秿濮ｅ繋绔存禒鐣岀法婵傜刀</footer>
       </div>
     </main>
   </div>
@@ -571,7 +575,7 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 100vh; }
 .icon-btn.danger { background: #ff6b9d; color: white; }
 .icon-btn:hover { opacity: 0.8; }
 
-/* 返回按钮样式 */
+/* 鏉╂柨娲栭幐澶愭尦閺嶅嘲绱?*/
 .back-btn { background: #ffeef5; border: none; border-radius: 8px; padding: 8px 16px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 4px; font-size: 14px; }
 .back-btn.ghost { background: rgba(255,255,255,0.65); border: 1px solid rgba(255, 190, 210, 0.7); color: #ff4c8a; }
 .back-btn:hover { opacity: 0.8; }
@@ -626,6 +630,7 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 100vh; }
 .sort-btn.active { background: #ffeef5; color: #ff4c8a; border-color: #ff8bb3; }
 .sort-btn:hover { opacity: 0.8; }
 
+/* 濞村繗顫嶅Ο鈥崇础閸滃本鎼锋担婊勭埉閺嶅嘲绱?*/
 .actions-bar {
   display: flex;
   align-items: center;
@@ -661,7 +666,7 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 100vh; }
   opacity: 0.8;
 }
 
-/* 列表模式样式 */
+/* 閸掓銆冨Ο鈥崇础閺嶅嘲绱?*/
 .images-list {
   display: flex;
   flex-direction: column;
@@ -727,7 +732,7 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 100vh; }
   border: 1px solid rgba(255, 190, 210, 0.7);
 }
 
-/* 瀑布流模式样式 */
+/* 閻庢垵绔峰ù浣鼓佸蹇旂壉瀵?*/
 .images-container.masonry {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
@@ -774,7 +779,7 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 100vh; }
   text-overflow: ellipsis;
 }
 
-/* 大卡片模式样式 */
+/* 婢堆冨幢閻楀洦膩瀵繑鐗卞?*/
 .images-container.large {
   display: grid;
   grid-template-columns: 1fr;
@@ -859,7 +864,7 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 100vh; }
 .btn.cancel { background: rgba(255,255,255,0.65); border: 1px solid rgba(255, 190, 210, 0.7); color: #8c546e; margin-right: 8px; }
 .btn.cancel:hover { background: #ffeef5; }
 
-/* 模态框样式 */
+/* 濡剝鈧焦顢嬮弽宄扮础 */
 .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 100; display: flex; align-items: center; justify-content: center; }
 .modal-container { position: relative; background: white; border-radius: 16px; width: 90%; max-width: 800px; max-height: 80vh; display: flex; flex-direction: column; }
 .modal-header { display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; border-bottom: 1px solid rgba(255, 190, 210, 0.5); }
@@ -878,7 +883,7 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 100vh; }
 
 .modal-pagination { display: flex; justify-content: center; align-items: center; gap: 16px; margin-top: 20px; }
 
-/* 轮播组件样式 */
+/* 鏉烆喗鎸辩紒鍕閺嶅嘲绱?*/
 .carousel-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.9); z-index: 100; display: flex; align-items: center; justify-content: center; }
 .carousel-container { position: relative; max-width: 90vw; max-height: 90vh; }
 .carousel-close { position: absolute; top: -40px; right: 0; background: none; border: none; color: white; font-size: 24px; cursor: pointer; z-index: 10; }
@@ -889,7 +894,7 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 100vh; }
 .nav-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .nav-info { font-size: 16px; }
 
-/* 页脚布局修复 */
+/* 妞や絻鍓肩敮鍐ㄧ湰娣囶喖顦?*/
 .footer-wrapper {
   margin-top: auto;
   padding: 16px 24px;

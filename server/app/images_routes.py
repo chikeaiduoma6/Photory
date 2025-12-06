@@ -483,6 +483,30 @@ def _get_or_create_tags(tag_names: List[str], user_id: int, color_map: dict[str,
     return tags
 
 
+def _parse_tag_payload(raw_tags) -> tuple[list[str], dict[str, str]]:
+    names: list[str] = []
+    color_map: dict[str, str] = {}
+    if isinstance(raw_tags, list):
+        for item in raw_tags:
+            if isinstance(item, str):
+                name = item.strip()
+            elif isinstance(item, dict):
+                name = str(item.get("name") or "").strip()
+                if item.get("color"):
+                    color_map[name] = item.get("color")
+            else:
+                continue
+            if name:
+                names.append(name)
+    uniq_names: list[str] = []
+    seen = set()
+    for n in names:
+        if n not in seen:
+            uniq_names.append(n)
+            seen.add(n)
+    return uniq_names, color_map
+
+
 def _current_user_id() -> int:
     verify_jwt_in_request(optional=False, locations=["headers", "query_string"])
     return int(get_jwt_identity())
@@ -1361,6 +1385,168 @@ def image_detail(image_id: int):
     user_id = _current_user_id()
     img = _get_user_image(image_id, user_id, include_deleted=True)
     return jsonify(_serialize_image(img))
+
+
+@images_bp.post("/<int:image_id>/export")
+def export_image(image_id: int):
+    user_id = _current_user_id()
+    img = _get_user_image(image_id, user_id, include_deleted=False)
+
+    rel = _normalize_rel_path(img.filename)
+    if not rel:
+        return jsonify({"message": "文件不存在"}), 404
+    disk_path = os.path.join(current_app.config["UPLOAD_DIR"], rel)
+    if not os.path.exists(disk_path):
+        return jsonify({"message": "文件不存在"}), 404
+
+    payload = request.get_json() or {}
+    option = str(payload.get("option") or "override").lower()
+    option = "new" if option == "new" else "override"
+    name = (payload.get("name") or img.name or img.original_name).strip() or img.name
+    folder = (payload.get("folder") or img.folder or "默认图库").strip() or "默认图库"
+    tag_names, color_map = _parse_tag_payload(payload.get("tags") or [])
+    old_thumb_rel = _normalize_rel_path(img.thumb_path)
+
+    _ensure_user_dirs(user_id)
+
+    try:
+        with PILImage.open(disk_path) as src:
+            src = ImageOps.exif_transpose(src)
+            exif_bytes = src.info.get("exif")
+            edited = _apply_edits(src, payload)
+    except Exception:
+        current_app.logger.exception("export apply edits failed")
+        return jsonify({"message": "处理图片失败"}), 500
+
+    ext = os.path.splitext(rel)[1].lower().lstrip(".") or "jpg"
+    fmt_map = {"jpg": "JPEG", "jpeg": "JPEG", "png": "PNG", "gif": "GIF", "webp": "WEBP", "bmp": "BMP"}
+    fmt = fmt_map.get(ext, "JPEG")
+    mime_map = {
+        "JPEG": "image/jpeg",
+        "PNG": "image/png",
+        "GIF": "image/gif",
+        "WEBP": "image/webp",
+        "BMP": "image/bmp",
+    }
+
+    def _save_with_exif(pil_img: PILImage.Image, dest_disk: str):
+        os.makedirs(os.path.dirname(dest_disk), exist_ok=True)
+        save_kwargs = {"format": fmt}
+        if fmt == "JPEG" and exif_bytes:
+            save_kwargs["exif"] = exif_bytes
+            save_kwargs["quality"] = 95
+        pil_img.save(dest_disk, **save_kwargs)
+
+    def _save_new_thumb(src_disk: str, rel_hint: str | None = None) -> str:
+        thumb_rel = rel_hint or _normalize_rel_path(os.path.join(f"user_{user_id}", f"{uuid.uuid4().hex}_thumb.jpg"))
+        thumb_disk = os.path.join(current_app.config["THUMB_DIR"], thumb_rel)
+        os.makedirs(os.path.dirname(thumb_disk), exist_ok=True)
+        _save_thumb(src_disk, thumb_disk)
+        return thumb_rel
+
+    try:
+        if option == "override":
+            backup_token = uuid.uuid4().hex
+            ver_rel = _normalize_rel_path(os.path.join(f"user_{user_id}", "versions", f"{backup_token}.{ext}"))
+            os.makedirs(os.path.join(current_app.config["UPLOAD_DIR"], f"user_{user_id}", "versions"), exist_ok=True)
+            shutil.copyfile(disk_path, os.path.join(current_app.config["UPLOAD_DIR"], ver_rel))
+            ver_thumb_rel = None
+            try:
+                os.makedirs(os.path.join(current_app.config["THUMB_DIR"], f"user_{user_id}", "versions"), exist_ok=True)
+                ver_thumb_rel = _normalize_rel_path(
+                    os.path.join(f"user_{user_id}", "versions", f"{backup_token}_thumb.jpg")
+                )
+                _save_thumb(disk_path, os.path.join(current_app.config["THUMB_DIR"], ver_thumb_rel))
+            except Exception:
+                ver_thumb_rel = None
+
+            version_row = ImageVersion(
+                image_id=img.id,
+                name=img.name or img.original_name,
+                note="覆盖前版本",
+                filename=ver_rel,
+                thumb_path=ver_thumb_rel,
+            )
+            db.session.add(version_row)
+
+            _save_with_exif(edited, disk_path)
+            thumb_rel = _save_new_thumb(disk_path)
+            exif_data = _extract_exif(edited, exif_bytes)
+
+            img.name = name
+            img.folder = folder
+            img.width, img.height = edited.size
+            img.size = os.path.getsize(disk_path)
+            img.exif_json = json.dumps(exif_data.get("raw") or {})
+            img.taken_at = _parse_taken_at(exif_data.get("taken_at"))
+            img.camera = exif_data.get("camera") or None
+            img.lens = exif_data.get("lens") or None
+            img.iso = exif_data.get("iso") or None
+            img.exposure = exif_data.get("exposure") or None
+            img.aperture = exif_data.get("aperture") or None
+            img.focal = exif_data.get("focal") or None
+            img.latitude = exif_data.get("latitude")
+            img.longitude = exif_data.get("longitude")
+            img.mime_type = mime_map.get(fmt, img.mime_type)
+            img.thumb_path = thumb_rel
+            if tag_names is not None:
+                img.tags = _get_or_create_tags(tag_names, user_id=user_id, color_map=color_map)
+            db.session.commit()
+
+            if old_thumb_rel and old_thumb_rel != thumb_rel:
+                old_disk = os.path.join(current_app.config["THUMB_DIR"], old_thumb_rel)
+                if os.path.exists(old_disk):
+                    try:
+                        os.remove(old_disk)
+                    except Exception:
+                        pass
+
+            return jsonify({"message": "ok", "item": _serialize_image(img)})
+
+        token = uuid.uuid4().hex
+        rel_new = _normalize_rel_path(os.path.join(f"user_{user_id}", f"{token}.{ext}"))
+        disk_new = os.path.join(current_app.config["UPLOAD_DIR"], rel_new)
+        _save_with_exif(edited, disk_new)
+        thumb_rel = _save_new_thumb(disk_new)
+        exif_data = _extract_exif(edited, exif_bytes)
+        lat = exif_data.get("latitude")
+        lon = exif_data.get("longitude")
+        if (lat is None or lon is None) and exif_data.get("gps"):
+            lat, lon = _gps_to_decimal(exif_data.get("gps"))
+
+        new_img = Image(
+            user_id=user_id,
+            name=name,
+            description=img.description,
+            filename=rel_new,
+            original_name=img.original_name,
+            mime_type=mime_map.get(fmt, img.mime_type),
+            size=os.path.getsize(disk_new),
+            width=edited.size[0],
+            height=edited.size[1],
+            taken_at=_parse_taken_at(exif_data.get("taken_at")),
+            camera=exif_data.get("camera"),
+            lens=exif_data.get("lens"),
+            iso=exif_data.get("iso"),
+            exposure=exif_data.get("exposure"),
+            aperture=exif_data.get("aperture"),
+            focal=exif_data.get("focal"),
+            latitude=lat,
+            longitude=lon,
+            exif_json=json.dumps(exif_data.get("raw") or {}),
+            thumb_path=thumb_rel,
+            visibility=img.visibility,
+            is_featured=False,
+            folder=folder,
+        )
+        new_img.tags = _get_or_create_tags(tag_names, user_id=user_id, color_map=color_map)
+        db.session.add(new_img)
+        db.session.commit()
+        return jsonify({"message": "ok", "item": _serialize_image(new_img)})
+    except Exception as exc:
+        db.session.rollback()
+        current_app.logger.exception("export failed")
+        return jsonify({"message": "保存失败", "error": str(exc)}), 500
 
 
 @images_bp.post("/<int:image_id>/tags")

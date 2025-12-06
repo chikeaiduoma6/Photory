@@ -284,10 +284,13 @@ onUnmounted(stopSlider)
 
         <div class="right">
           <span class="welcome">欢迎你，亲爱的 Photory 用户 {{ username }}</span>
-          <el-badge is-dot class="bell"><button class="icon-btn">🔔</button></el-badge>
-          <button class="icon-btn" @click="logout">🚪</button>
+          <button class="logout-btn" @click="logout">
+            <span class="icon">🚪</span>
+            <span class="text">退出</span>
+          </button>
         </div>
       </header>
+
 
       <div class="drawer" :class="{ open: navOpen }">
         <div class="drawer-mask" @click="closeNav"></div>
@@ -526,6 +529,23 @@ main {
   background: rgba(255, 255, 255, 0.65);
   border: 1px solid rgba(255, 190, 210, 0.7);
 }
+.logout-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  background: #ffeef5;
+  border-radius: 999px;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  color: #8c546e;
+}
+
+.logout-btn:hover {
+  background: #ffd6e5;
+}
+
 .hero {
   display: grid;
   grid-template-columns: 1.4fr 1fr;

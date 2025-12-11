@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
@@ -22,6 +22,11 @@ interface TagItem {
   name: string
   color: string
 }
+interface AlbumOption {
+  id: number
+  title: string
+  visibility: string
+}
 
 const router = useRouter()
 const authStore = useAuthStore()
@@ -32,13 +37,9 @@ const links = [
   { label: '搜索引擎', icon: '🔎', path: '/search' },
   { label: '上传中心', icon: '☁️', path: '/upload' },
   { label: '标签', icon: '🏷️', path: '/tags' },
-  { label: '文件夹', icon: '📁', path: '/folders' },
   { label: '相册', icon: '📚', path: '/albums' },
-  { label: '智能分类', icon: '🧠', path: '/smart' },
   { label: 'AI 工作台', icon: '🤖', path: '/ai' },
-  { label: '任务中心', icon: '🧾', path: '/tasks' },
   { label: '回收站', icon: '🗑️', path: '/recycle' },
-  { label: '设置', icon: '⚙️', path: '/settings' },
 ]
 
 const navOpen = ref(false)
@@ -62,7 +63,10 @@ watch(
 )
 
 const selectedFiles = ref<File[]>([])
-const targetFolder = ref('我的图库')
+const albumOptions = ref<AlbumOption[]>([])
+const selectedAlbumId = ref<number | ''>('')
+const loadingAlbums = ref(false)
+const newAlbumTitle = ref('')
 const visibility = ref<'public' | 'private'>('private')
 const tagList = ref<TagItem[]>([])
 const newTagName = ref('')
@@ -70,6 +74,7 @@ const newTagColor = ref('#ff8bb3')
 const customName = ref('')
 const description = ref('')
 const openDetailAfter = ref(false)
+const autoAnalyze = ref(true)
 
 const uploadItems = ref<UploadItem[]>([])
 const fileInputRef = ref<HTMLInputElement | null>(null)
@@ -120,6 +125,39 @@ function removeTag(name: string) {
   tagList.value = tagList.value.filter(t => t.name !== name)
 }
 
+async function fetchAlbums() {
+  loadingAlbums.value = true
+  try {
+    const res = await axios.get('/api/v1/albums', { params: { page: 1, page_size: 100 } })
+    albumOptions.value = res.data.items || []
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.message || '获取相册列表失败')
+    albumOptions.value = []
+  } finally {
+    loadingAlbums.value = false
+  }
+}
+
+async function createAlbum() {
+  const title = newAlbumTitle.value.trim()
+  if (!title) {
+    ElMessage.warning('请输入相册名称')
+    return
+  }
+  try {
+    const res = await axios.post('/api/v1/albums', { title, visibility: 'private' })
+    const created = res.data.album
+    if (created) {
+      albumOptions.value.unshift(created)
+      selectedAlbumId.value = created.id
+    }
+    ElMessage.success('相册创建成功')
+    newAlbumTitle.value = ''
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.message || '创建相册失败')
+  }
+}
+
 async function uploadOne(item: UploadItem) {
   if (!item.raw) {
     item.status = 'error'
@@ -128,11 +166,15 @@ async function uploadOne(item: UploadItem) {
   }
   const form = new FormData()
   form.append('file', item.raw)
-  form.append('folder', targetFolder.value || '默认图库')
+  form.append('folder', '默认图库')
+  if (selectedAlbumId.value) {
+    form.append('album_id', String(selectedAlbumId.value))
+  }
   form.append('visibility', visibility.value)
   form.append('tags', tagList.value.map(t => t.name).join(','))
   form.append('name', customName.value || item.name.split('.').slice(0, -1).join('.') || item.name)
   form.append('description', description.value || '')
+  form.append('auto_ai', autoAnalyze.value ? '1' : '0')
 
   const controller = new AbortController()
   item.controller = controller
@@ -210,6 +252,21 @@ function logout() {
   authStore.logout()
   router.push('/auth/login')
 }
+
+onMounted(() => {
+  if (authStore.token) fetchAlbums()
+})
+watch(
+  () => authStore.token,
+  token => {
+    if (token) {
+      fetchAlbums()
+    } else {
+      albumOptions.value = []
+      selectedAlbumId.value = ''
+    }
+  }
+)
 </script>
 
 <template>
@@ -308,12 +365,18 @@ function logout() {
           </div>
 
           <div class="setting-item">
-            <label>目标文件夹</label>
-            <select v-model="targetFolder">
-              <option value="我的图库">我的图库</option>
-              <option value="旅行相册">旅行相册</option>
-              <option value="日常碎片">日常碎片</option>
+            <label>目标相册</label>
+            <select v-model="selectedAlbumId">
+              <option value="">无（不加入相册）</option>
+              <option v-for="album in albumOptions" :key="album.id" :value="album.id">
+                {{ album.title }}
+              </option>
             </select>
+            <div class="album-inline-create">
+              <input v-model="newAlbumTitle" placeholder="新相册名称" />
+              <button class="pill add-album-btn" :disabled="loadingAlbums" @click="createAlbum">+ 新建相册</button>
+            </div>
+            <div v-if="loadingAlbums" class="muted">相册列表加载中...</div>
           </div>
 
           <div class="setting-item">
@@ -349,6 +412,14 @@ function logout() {
             <label>上传后打开图片</label>
             <label class="switch">
               <input type="checkbox" v-model="openDetailAfter" />
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="setting-item toggle-row">
+            <label>自动AI分析（生成标签和描述）</label>
+            <label class="switch">
+              <input type="checkbox" v-model="autoAnalyze" />
               <span class="slider"></span>
             </label>
           </div>
@@ -468,6 +539,9 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 100vh; paddin
 .tag-create { display: flex; align-items: center; gap: 8px; }
 .tag-create .color-picker { width: 46px; height: 36px; padding: 4px; border-radius: 12px; border: 1px solid rgba(255, 190, 210, 0.9); background: #fff; cursor: pointer; }
 .add-tag-btn { border: none; color: #b05f7a; }
+.album-inline-create { margin-top: 8px; display: flex; gap: 8px; align-items: center; }
+.album-inline-create input { flex: 1; padding: 10px 12px; border-radius: 12px; border: 1px solid #ffd1e2; background: #fff; color: #ff4c8a; }
+.add-album-btn { white-space: nowrap; }
 .tags-row.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; min-height: 28px; }
 .tag-chip { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 999px; border: 1px solid transparent; font-size: 12px; cursor: pointer; }
 .tag-chip .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }

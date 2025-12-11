@@ -10,19 +10,19 @@ const authStore = useAuthStore()
 const username = computed(() => authStore.user?.username || '访客')
 const apiBase = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '')
 const withBase = (p: string) => (!p ? '' : p.startsWith('http') ? p : `${apiBase}${p}`)
+const tokenParam = computed(() => (authStore.token ? `?jwt=${authStore.token}` : ''))
 
 interface ChatMessage { role: 'user' | 'assistant'; content: string; images?: any[] }
 const messages = ref<ChatMessage[]>([
-  { role: 'assistant', content: '嗨，我是 AI 图片助理，问我“帮我找夜景的照片”试试？' },
+  { role: 'assistant', content: '你好呀，我是你的专属AI图片小助手，可以帮你检索图片哦' },
 ])
-const input = ref('请帮我找几张日落或海边的照片')
+const input = ref('在这里输入你的问题...')
 const sending = ref(false)
 const scrollRef = ref<HTMLDivElement | null>(null)
 const quickPrompts = [
-  '找几张有人物和城市夜景的照片',
-  '有哪些动物主题的图片？',
-  '列出最近上传的风景照',
-  '帮我找有花和微距的作品',
+  '请帮我找几张包含花朵的图片',
+  '有哪些日落主题的图片？',
+  '请列出2025-12-4上传的图片',
 ]
 
 function appendMessage(msg: ChatMessage) {
@@ -59,13 +59,9 @@ const links = [
   { label: '搜索引擎', icon: '🔎', path: '/search' },
   { label: '上传中心', icon: '☁️', path: '/upload' },
   { label: '标签', icon: '🏷️', path: '/tags' },
-  { label: '文件夹', icon: '📁', path: '/folders' },
   { label: '相册', icon: '📚', path: '/albums' },
-  { label: '智能分类', icon: '🧠', path: '/smart' },
   { label: 'AI 工作台', icon: '🤖', path: '/ai' },
-  { label: '任务中心', icon: '🧾', path: '/tasks' },
   { label: '回收站', icon: '🗑️', path: '/recycle' },
-  { label: '设置', icon: '⚙️', path: '/settings' },
 ]
 const navOpen = ref(false)
 const currentPath = computed(() => router.currentRoute.value.path)
@@ -147,7 +143,7 @@ const closeNav = () => (navOpen.value = false)
               <div class="content" v-html="m.content.replace(/\n/g, '<br/>')"></div>
               <div v-if="m.images?.length" class="thumbs">
                 <div v-for="img in m.images" :key="img.id" class="thumb" @click="openImage(img.id)">
-                  <img :src="withBase(img.thumb_url)" loading="lazy" />
+                  <img :src="withBase(img.thumb_url || `/api/v1/images/${img.id}/thumb`) + tokenParam" loading="lazy" />
                   <div class="caption">
                     <div class="name">{{ img.name }}</div>
                     <div class="tags">{{ (img.tags || []).slice(0,3).join(' · ') }}</div>

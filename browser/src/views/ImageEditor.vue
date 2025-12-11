@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -67,6 +67,12 @@ const versionStamp = computed(() => (detail.value?.updated_at ? `&v=${encodeURIC
 const originalUrl = computed(() => (detail.value ? withBase(`${detail.value.raw_url}${tokenParam.value}${versionStamp.value}`) : ''))
 const thumbUrl = computed(() => (detail.value ? withBase(`${detail.value.thumb_url || detail.value.raw_url}${tokenParam.value}${versionStamp.value}`) : ''))
 const previewSrc = computed(() => originalUrl.value || thumbUrl.value || fallbackImage)
+const stageRef = ref<HTMLElement | null>(null)
+const mainImgRef = ref<HTMLImageElement | null>(null)
+const imageBox = ref({ x: 0, y: 0, w: 1, h: 1 })
+const dragging = ref(false)
+const dragMode = ref<'move' | 'draw'>('move')
+const dragStart = ref({ x: 0, y: 0, box: { x: 0, y: 0, w: 1, h: 1 } })
 
 const cropPresets = [
   { label: '自由', value: 'free', aspect: 'auto' },
@@ -108,15 +114,17 @@ const cropAspectLabel = computed(() => {
 })
 const cropGuideStyle = computed(() => {
   const box = editorState.value.cropBox
+  const img = imageBox.value
   return {
-    left: `${box.x * 100}%`,
-    top: `${box.y * 100}%`,
-    width: `${box.w * 100}%`,
-    height: `${box.h * 100}%`,
+    left: `${(img.x + box.x * img.w) * 100}%`,
+    top: `${(img.y + box.y * img.h) * 100}%`,
+    width: `${box.w * img.w * 100}%`,
+    height: `${box.h * img.h * 100}%`,
     aspectRatio: cropAspect.value === 'auto' ? 'unset' : cropAspect.value,
   }
 })
 const clipStyle = computed(() => {
+  if (dragging.value) return {}
   const box = editorState.value.cropBox
   const top = box.y * 100
   const left = box.x * 100
@@ -156,6 +164,7 @@ async function fetchDetail() {
     exportTags.value = (res.data.tag_objects || []).map((t: any) => ({ name: t.name, color: t.color || palette[0] }))
     versionHistory.value = (res.data.version_history || []).map((v: any) => ({ ...v, type: 'edit' as const }))
     resetHistories()
+    nextTick(updateImageBox)
   } catch (err) {
     ElMessage.error('获取图片详情失败')
     router.push('/')
@@ -387,24 +396,47 @@ async function saveVersion(mode?: 'override' | 'new') {
   }
 }
 
-const stageRef = ref<HTMLElement | null>(null)
-const dragging = ref(false)
-const dragMode = ref<'move' | 'draw'>('move')
-const dragStart = ref({ x: 0, y: 0, box: { x: 0, y: 0, w: 1, h: 1 } })
+function updateImageBox() {
+  const stageRect = stageRef.value?.getBoundingClientRect()
+  const imgRect = mainImgRef.value?.getBoundingClientRect()
+  if (!stageRect || !imgRect) return
+  const w = stageRect.width || 1
+  const h = stageRect.height || 1
+  imageBox.value = {
+    x: (imgRect.left - stageRect.left) / w,
+    y: (imgRect.top - stageRect.top) / h,
+    w: imgRect.width / w,
+    h: imgRect.height / h,
+  }
+}
+
+function cropFillsStage(box: { x: number; y: number; w: number; h: number }) {
+  const epsilon = 0.001
+  return box.x <= epsilon && box.y <= epsilon && box.w >= 1 - epsilon && box.h >= 1 - epsilon
+}
 
 function stagePos(e: MouseEvent) {
   const rect = stageRef.value?.getBoundingClientRect()
   if (!rect) return { x: 0, y: 0 }
+  const rawX = (e.clientX - rect.left) / rect.width
+  const rawY = (e.clientY - rect.top) / rect.height
+  const img = imageBox.value
+  const x = (rawX - img.x) / Math.max(img.w, 0.0001)
+  const y = (rawY - img.y) / Math.max(img.h, 0.0001)
   return {
-    x: Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width)),
-    y: Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height)),
+    x: Math.min(1, Math.max(0, x)),
+    y: Math.min(1, Math.max(0, y)),
   }
 }
 
 function startCrop(e: MouseEvent) {
   if (editorState.value.cropPreset !== 'free') return
+  if (e.button !== 0) return
+  e.preventDefault()
+  const targetIsArea = (e.target as HTMLElement).classList.contains('area')
+  const forceDraw = e.shiftKey || e.altKey || cropFillsStage(editorState.value.cropBox)
+  dragMode.value = targetIsArea && !forceDraw ? 'move' : 'draw'
   dragging.value = true
-  dragMode.value = (e.target as HTMLElement).classList.contains('area') ? 'move' : 'draw'
   dragStart.value = { x: stagePos(e).x, y: stagePos(e).y, box: { ...editorState.value.cropBox } }
   window.addEventListener('mousemove', onCropMove)
   window.addEventListener('mouseup', endCrop)
@@ -440,7 +472,16 @@ function endCrop() {
   pushCropHistory()
 }
 
-onMounted(fetchDetail)
+onMounted(() => {
+  window.addEventListener('resize', updateImageBox)
+  fetchDetail()
+})
+onUnmounted(() => window.removeEventListener('resize', updateImageBox))
+watch(previewSrc, () => nextTick(updateImageBox))
+watch(
+  () => [editorState.value.zoom, editorState.value.rotation],
+  () => nextTick(updateImageBox)
+)
 </script>
 
 <template>
@@ -460,13 +501,9 @@ onMounted(fetchDetail)
           { label: '搜索引擎', icon: '🔎', path: '/search' },
           { label: '上传中心', icon: '☁️', path: '/upload' },
           { label: '标签', icon: '🏷️', path: '/tags' },
-          { label: '文件夹', icon: '📁', path: '/folders' },
           { label: '相册', icon: '📚', path: '/albums' },
-          { label: '智能分类', icon: '🧠', path: '/smart' },
           { label: 'AI 工作台', icon: '🤖', path: '/ai' },
-          { label: '任务中心', icon: '🧾', path: '/tasks' },
           { label: '回收站', icon: '🗑️', path: '/recycle' },
-          { label: '设置', icon: '⚙️', path: '/settings' },
         ]" :key="item.path" :class="{ active: $route.path === item.path || $route.path.startsWith(item.path + '/') }" @click="router.push(item.path)">
           {{ item.icon }} {{ item.label }}
         </a>
@@ -549,7 +586,7 @@ onMounted(fetchDetail)
 
           <div class="preview-box">
             <div class="image-stage" ref="stageRef" @mouseleave="showOriginal = false" @mousedown="startCrop">
-              <img :src="previewSrc" :alt="detail.name" class="main-img" :style="showOriginal ? {} : editedStyle" />
+              <img :src="previewSrc" :alt="detail.name" class="main-img" ref="mainImgRef" @load="updateImageBox" :style="showOriginal ? {} : editedStyle" />
               <div class="crop-guides" :class="{ active: cropAspect !== 'auto' }">
                 <div class="area" :style="cropGuideStyle">
                   <span>{{ cropAspectLabel }}</span>

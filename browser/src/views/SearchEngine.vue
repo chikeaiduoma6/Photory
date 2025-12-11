@@ -28,13 +28,9 @@ const links = [
   { label: '搜索引擎', icon: '🔎', path: '/search' },
   { label: '上传中心', icon: '☁️', path: '/upload' },
   { label: '标签', icon: '🏷️', path: '/tags' },
-  { label: '文件夹', icon: '📁', path: '/folders' },
   { label: '相册', icon: '📚', path: '/albums' },
-  { label: '智能分类', icon: '🧠', path: '/smart' },
   { label: 'AI 工作台', icon: '🤖', path: '/ai' },
-  { label: '任务中心', icon: '🧾', path: '/tasks' },
   { label: '回收站', icon: '🗑️', path: '/recycle' },
-  { label: '设置', icon: '⚙️', path: '/settings' },
 ]
 const currentPath = computed(() => router.currentRoute.value.path)
 const go = (path: string) => { router.push(path); navOpen.value = false }
@@ -48,6 +44,10 @@ const keyword = ref('')
 const selectedTags = ref<string[]>([])
 const tagOptions = ref<TagOption[]>([])
 const tagLoading = ref(false)
+
+const selectedAlbums = ref<string[]>([])
+const albumOptions = ref<{ id: number; title: string }[]>([])
+const albumLoading = ref(false)
 
 const dateType = ref<'captured' | 'uploaded'>('captured')
 const dateRange = ref<[string, string] | []>([])
@@ -84,7 +84,7 @@ const sortOptions = [
   { value: 'size_asc', label: '文件大小 · 小→大' },
   { value: 'res_desc', label: '分辨率 · 高→低' },
   { value: 'res_asc', label: '分辨率 · 低→高' },
-  { value: 'tag_desc', label: '标签数量 · 多→少' },
+  { value: 'name_desc', label: '图片名称 · Z-A' },
   { value: 'name_asc', label: '图片名称 · A-Z' },
 ]
 
@@ -129,6 +129,21 @@ function remoteTagMethod(query: string) {
   fetchTags(query)
 }
 
+async function fetchAlbums(query = '') {
+  albumLoading.value = true
+  try {
+    const res = await axios.get('/api/v1/albums', { params: { keyword: query, page: 1, page_size: 12 } })
+    albumOptions.value = res.data.items || []
+  } catch {
+    /* ignore */
+  } finally {
+    albumLoading.value = false
+  }
+}
+function remoteAlbumMethod(query: string) {
+  fetchAlbums(query)
+}
+
 function applyQuickRange(preset: 'today' | '3d' | '7d' | '30d' | '') {
   quickPreset.value = preset
   if (!preset) {
@@ -155,6 +170,7 @@ function buildParams() {
   const kw = keyword.value.trim()
   if (kw) params.keyword = kw
   if (selectedTags.value.length) params.tags = selectedTags.value.join(',')
+  if (selectedAlbums.value.length) params.albums = selectedAlbums.value.join(',')
   if (formats.value.length) params.formats = formats.value.join(',')
   if (dateRange.value.length === 2) {
     params[`${dateType.value}_start`] = dateRange.value[0]
@@ -196,6 +212,7 @@ function handleSearch() {
 function resetFilters() {
   keyword.value = ''
   selectedTags.value = []
+  selectedAlbums.value = []
   formats.value = []
   sizeRange.value = [0, 200]
   exif.value = { camera: '', lens: '', iso: '', aperture: '', focal_length: '', shutter: '' }
@@ -221,6 +238,7 @@ const goDetail = (id: number) => router.push(`/images/${id}`)
 
 onMounted(() => {
   fetchTags()
+  fetchAlbums()
   fetchResults()
 })
 </script>
@@ -305,6 +323,24 @@ onMounted(() => {
               <span class="tag-option">
                 <span class="dot" :style="{ background: tag.color || fallbackTagColor }"></span>
                 {{ tag.name }}
+              </span>
+            </el-option>
+          </el-select>
+          <el-select
+            v-model="selectedAlbums"
+            class="tag-select"
+            multiple
+            filterable
+            remote
+            clearable
+            :remote-method="remoteAlbumMethod"
+            :loading="albumLoading"
+            placeholder="按相册精准筛选（自动补全，可多选）"
+          >
+            <el-option v-for="album in albumOptions" :key="album.id" :label="album.title" :value="album.title">
+              <span class="tag-option">
+                <span class="dot album-dot"></span>
+                {{ album.title }}
               </span>
             </el-option>
           </el-select>
@@ -464,6 +500,7 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 100vh; }
 .tag-select { min-width: 220px; flex: 0 0 260px; }
 .tag-option { display: inline-flex; align-items: center; gap: 6px; }
 .tag-option .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.tag-option .album-dot { background: #ffd0e0; border: 1px solid #ff9db8; }
 
 .primary-btn, .ghost-btn { border: none; border-radius: 999px; padding: 9px 16px; cursor: pointer; font-size: 13px; }
 .primary-btn { background: linear-gradient(135deg, #ff8bb3, #ff6fa0); color: #fff; box-shadow: 0 6px 14px rgba(255, 120, 165, 0.4); }

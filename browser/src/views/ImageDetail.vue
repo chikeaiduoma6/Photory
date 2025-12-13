@@ -4,6 +4,8 @@ import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
+import { usePreferencesStore } from '@/stores/preferences'
+import { getNavLinks } from '@/utils/navLinks'
 
 const route = useRoute()
 const router = useRouter()
@@ -78,15 +80,8 @@ const exifTags = computed(() => {
 })
 const historyList = computed(() => detail.value?.version_history || [])
 
-const links = [
-  { label: '首页', icon: '🏠', path: '/' },
-  { label: '搜索引擎', icon: '🔎', path: '/search' },
-  { label: '上传中心', icon: '☁️', path: '/upload' },
-  { label: '标签', icon: '🏷️', path: '/tags' },
-  { label: '相册', icon: '📚', path: '/albums' },
-  { label: 'AI 工作台', icon: '🤖', path: '/ai' },
-  { label: '回收站', icon: '🗑️', path: '/recycle' },
-]
+const preferencesStore = usePreferencesStore()
+const links = computed(() => getNavLinks(preferencesStore.language))
 
 const currentPath = computed(() => router.currentRoute.value.path)
 function go(path: string) {

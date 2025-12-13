@@ -4,6 +4,8 @@ import { useRouter } from 'vue-router'
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
+import { usePreferencesStore } from '@/stores/preferences'
+import { getNavLinks } from '@/utils/navLinks'
 
 type UploadStatus = 'waiting' | 'uploading' | 'paused' | 'stopped' | 'success' | 'error'
 interface UploadItem {
@@ -32,15 +34,8 @@ const router = useRouter()
 const authStore = useAuthStore()
 const username = computed(() => authStore.user?.username || '未登录')
 
-const links = [
-  { label: '首页', icon: '🏠', path: '/' },
-  { label: '搜索引擎', icon: '🔎', path: '/search' },
-  { label: '上传中心', icon: '☁️', path: '/upload' },
-  { label: '标签', icon: '🏷️', path: '/tags' },
-  { label: '相册', icon: '📚', path: '/albums' },
-  { label: 'AI 工作台', icon: '🤖', path: '/ai' },
-  { label: '回收站', icon: '🗑️', path: '/recycle' },
-]
+const preferencesStore = usePreferencesStore()
+const links = computed(() => getNavLinks(preferencesStore.language))
 
 const navOpen = ref(false)
 const currentPath = computed(() => router.currentRoute.value.path)

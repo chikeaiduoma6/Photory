@@ -11,6 +11,7 @@ import Register from '../views/auth/Register.vue'
 import SearchEngine from '../views/SearchEngine.vue'
 import AIWorkspace from '../views/AIWorkspace.vue'
 import AlbumDetail from '../views/AlbumDetail.vue'
+import Settings from '../views/Settings.vue'
 
 const routes = [
   { path: '/', name: 'Dashboard', component: Dashboard },
@@ -22,6 +23,7 @@ const routes = [
   { path: '/albums', name: 'Albums', component: () => import('../views/Albums.vue'), meta: { title: '相册' } },
   { path: '/albums/:id', name: 'AlbumDetail', component: AlbumDetail, meta: { title: '相册详情' } },
   { path: '/ai', name: 'AIWorkspace', component: AIWorkspace, meta: { title: 'AI 工作台' } },
+  { path: '/settings', name: 'Settings', component: Settings, meta: { title: '设置' } },
   { path: '/images/:id', name: 'ImageDetail', component: ImageDetail, props: true },
   { path: '/images/:id/edit', name: 'ImageEditor', component: ImageEditor, props: true },
   { path: '/auth/login', name: 'AuthLogin', component: Login },

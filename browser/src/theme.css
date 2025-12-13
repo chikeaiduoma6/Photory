@@ -1,0 +1,63 @@
+:root.theme-dark {
+  color-scheme: dark;
+}
+
+:root.theme-dark .dashboard {
+  background: linear-gradient(135deg, #0f0f14, #1a1020) !important;
+  color: rgba(255, 255, 255, 0.92) !important;
+}
+
+:root.theme-dark .sidebar {
+  background: linear-gradient(180deg, rgba(30, 20, 34, 0.98), rgba(18, 12, 22, 0.98)) !important;
+  border-right-color: rgba(255, 190, 210, 0.18) !important;
+}
+
+:root.theme-dark .topbar,
+:root.theme-dark .ai-console,
+:root.theme-dark .ai-main-card,
+:root.theme-dark .drawer-panel {
+  background: rgba(22, 16, 28, 0.92) !important;
+  border-color: rgba(255, 190, 210, 0.18) !important;
+}
+
+:root.theme-dark nav a {
+  color: rgba(255, 255, 255, 0.82) !important;
+}
+
+:root.theme-dark nav a.active,
+:root.theme-dark nav a:hover {
+  background: rgba(255, 153, 187, 0.18) !important;
+  color: rgba(255, 255, 255, 0.96) !important;
+}
+
+:root.theme-dark .bubble {
+  background: rgba(255, 255, 255, 0.04) !important;
+  border-color: rgba(255, 190, 210, 0.18) !important;
+}
+
+:root.theme-dark textarea {
+  background: rgba(255, 255, 255, 0.05) !important;
+  color: rgba(255, 255, 255, 0.92) !important;
+  border-color: rgba(255, 190, 210, 0.2) !important;
+}
+
+:root.theme-dark .hint-card,
+:root.theme-dark .hint-group,
+:root.theme-dark .thumb {
+  background: rgba(255, 255, 255, 0.03) !important;
+  border-color: rgba(255, 190, 210, 0.16) !important;
+}
+
+:root.theme-eye .dashboard {
+  background: linear-gradient(135deg, #fbf3e6, #f6ead7) !important;
+  color: #3b2b26 !important;
+}
+
+:root.theme-eye .sidebar {
+  background: linear-gradient(180deg, #fff8ea, #fbf3e6) !important;
+}
+
+:root.theme-eye textarea {
+  background: rgba(255, 250, 240, 0.95) !important;
+}
+

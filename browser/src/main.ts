@@ -7,6 +7,8 @@ import axios from 'axios'
 import App from './App.vue'
 import router from './router'
 import { useAuthStore } from './stores/auth'
+import './theme.css'
+import { applyLanguage, applyThemeMode, getLanguage, getThemeMode } from './utils/preferences'
 
 const fallbackBase = typeof window !== 'undefined' ? window.location.origin : ''
 const API_BASE = (import.meta.env.VITE_API_URL || fallbackBase || '').replace(/\/$/, '')
@@ -44,6 +46,11 @@ app.use(pinia)
 
 const authStore = useAuthStore(pinia)
 authStore.hydrate()
+
+if (typeof window !== 'undefined') {
+  applyThemeMode(getThemeMode())
+  applyLanguage(getLanguage())
+}
 
 router.beforeEach((to, _from, next) => {
   if (to.path.startsWith('/auth')) return next()

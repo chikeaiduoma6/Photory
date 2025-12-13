@@ -14,7 +14,7 @@ from flask import Blueprint, current_app, jsonify, request, send_file
 from flask_jwt_extended import get_jwt_identity, verify_jwt_in_request
 from pillow_heif import read_heif, register_heif_opener
 from PIL import ExifTags, Image as PILImage, ImageEnhance, ImageOps
-from sqlalchemy import func, or_, and_, exists
+from sqlalchemy import func, or_, and_, exists, cast, String
 from openai import OpenAI
 
 from .extensions import db
@@ -841,7 +841,8 @@ def _upsert_ai_analysis(img: Image, tags: list[str], caption: str) -> ImageAIAna
 
 def _ai_parse_date_range(text: str) -> tuple[datetime | None, datetime | None, str]:
     """从文本解析日期区间，返回 (开始, 结束, 字段类型: created|taken)"""
-    lowered = (text or "").lower()
+    text = _normalize_query_text(text)
+    lowered = text.lower()
     field = "created"
     # 出现“拍摄/摄于/taken/capture”等，优先认为是拍摄时间
     if any(k in text for k in ["拍摄", "摄于"]) or "taken" in lowered or "capture" in lowered:
@@ -885,6 +886,9 @@ def _ai_parse_size(text: str) -> tuple[int | None, int | None]:
     """解析大小范围，返回字节数区间"""
     if not text:
         return None, None
+    # 规避把日期里的 “2025-12-4” 误识别成 “2025-12 MB” 这种大小范围
+    text = _normalize_query_text(text)
+    text_wo_dates = re.sub(r"\d{4}[-./年]\d{1,2}[-./月]\d{1,2}", " ", text)
 
     unit_map = {
         "kb": 1024,
@@ -896,26 +900,40 @@ def _ai_parse_size(text: str) -> tuple[int | None, int | None]:
         "兆": 1024 * 1024,
     }
 
-    def _to_bytes(num: str, unit: str | None) -> int:
-        factor = unit_map.get((unit or "mb").lower(), unit_map["mb"])
+    def _to_bytes(num: str, unit: str | None) -> int | None:
+        if not unit:
+            return None
+        factor = unit_map.get((unit or "").lower())
+        if not factor:
+            return None
         return int(float(num) * factor)
 
     range_match = re.search(
         r"(\d+(?:\.\d+)?)\s*(k|kb|m|mb|g|gb|兆)?\s*(?:-|~|到|至|—|–)\s*(\d+(?:\.\d+)?)\s*(k|kb|m|mb|g|gb|兆)?",
-        text,
+        text_wo_dates,
         flags=re.IGNORECASE,
     )
     if range_match:
-        min_b = _to_bytes(range_match.group(1), range_match.group(2) or range_match.group(4))
-        max_b = _to_bytes(range_match.group(3), range_match.group(4) or range_match.group(2))
+        # 至少一侧带单位，否则大概率是日期/编号区间
+        unit_left = range_match.group(2)
+        unit_right = range_match.group(4)
+        if not (unit_left or unit_right):
+            return None, None
+        min_b = _to_bytes(range_match.group(1), unit_left or unit_right)
+        max_b = _to_bytes(range_match.group(3), unit_right or unit_left)
+        if min_b is None or max_b is None:
+            return None, None
         if min_b > max_b:
             min_b, max_b = max_b, min_b
         return min_b, max_b
 
-    m = re.search(r"(\d+(?:\.\d+)?)\s*(k|kb|m|mb|g|gb|兆)?\s*b?", text, flags=re.IGNORECASE)
+    # 单值也要求显式单位，避免把年份/编号当成大小（例如 2025）
+    m = re.search(r"(\d+(?:\.\d+)?)\s*(k|kb|m|mb|g|gb|兆)\s*b?", text_wo_dates, flags=re.IGNORECASE)
     if not m:
         return None, None
     val_bytes = _to_bytes(m.group(1), m.group(2))
+    if val_bytes is None:
+        return None, None
     if any(k in text for k in ["以上", "大于", ">", "不少于", "至少", "greater"]):
         return val_bytes, None
     if any(k in text for k in ["以下", "小于", "<", "不超过", "最多", "不大于", "at most"]):
@@ -1018,103 +1036,374 @@ def _ai_detect_logic_mode(text: str) -> str:
     if not text:
         return "auto"
     t = text
-    # 更偏向“同时满足”的用词
-    if re.search(r"(并且|而且|同时|以及|又|并且还|并且同时)", t):
-        return "and"
     # 更偏向“二选一”的用词
     if re.search(r"(或者是|或者|或是|还是)", t):
         return "or"
+    # 更偏向“同时满足”的用词
+    if re.search(r"(并且|而且|同时|以及|又|并且还|并且同时)", t):
+        return "and"
     return "auto"
 
 
+def _normalize_query_text(text: str) -> str:
+    return (
+        (text or "")
+        .replace("－", "-")
+        .replace("–", "-")
+        .replace("—", "-")
+        .replace("‑", "-")
+        .replace("−", "-")
+    )
 
 
-def _ai_advanced_search(user_id: int, text: str, keywords: list[str], limit: int = 12) -> list[dict]:
-    """结合关键词与简单结构化条件进行搜索。
+def _is_noise_keyword(token: str) -> bool:
+    if not token:
+        return True
+    low = str(token).lower().strip()
+    if low in {"and", "or"}:
+        return True
+    if low in {"并且", "而且", "同时", "以及", "且", "和", "或者", "或是", "或则", "还是", "或"}:
+        return True
+    # 如果 token 自身包含结构化触发词，基本不应作为普通关键词参与过滤
+    if any(
+        k in low
+        for k in [
+            "相册",
+            "专辑",
+            "文件夹",
+            "上传",
+            "拍摄",
+            "摄于",
+            "相机",
+            "镜头",
+            "机型",
+            "分辨率",
+            "像素",
+            "大小",
+            "容量",
+            "文件大小",
+            "小于",
+            "大于",
+            "以上",
+            "以下",
+            "不超过",
+            "不少于",
+            "至少",
+            "最多",
+            "名为",
+            "叫做",
+            "名称为",
+            "标题为",
+            "并且",
+            "而且",
+            "同时",
+            "以及",
+            "或者",
+        ]
+    ):
+        return True
+    # 常见口头/指令词、结构化触发词：不应作为普通关键词参与过滤
+    noise_patterns = [
+        r"^(所有|全部|全部的|所有的|都|全部都|所有都)$",
+        r"^(并且|而且|同时|以及|且|和|或者|或是|或则|还是|或)$",
+        r"^(上传|上传于|上传的|拍摄|拍摄于|拍的|摄于)$",
+        r"^(相册|专辑|文件夹|相机|镜头|机型)$",
+        r"^(分辨率|像素|大小|容量|文件大小)$",
+        r"^(小于|大于|以上|以下|不超过|不少于|至少|最多)$",
+        r"^(图片|照片|相片)$",
+        r"^(帮我|为我|我要|我想|请|麻烦|帮忙|查找|搜索|检索|找|找出|列出|显示)$",
+        r"^(相关|相应)$",
+        r"^上传.*(图片|照片|相片)$",
+    ]
+    for pat in noise_patterns:
+        if re.search(pat, low, flags=re.IGNORECASE):
+            return True
+    return False
 
-    支持：
-    - 上传时间 / 拍摄时间；
-    - 文件大小；
-    - 分辨率；
-    - 相册名 / 文件夹；
-    - 相机 / 镜头；
-    - 名称 / 描述 / 原始文件名 / 标签 的关键词匹配；
-    并且可以通过“并且/或者”等词控制结构化条件与关键词的 AND / OR 关系。
-    """
-    # 1）解析结构化条件
-    start_dt, end_dt, date_field = _ai_parse_date_range(text)
-    has_date = bool(start_dt and end_dt)
-    # 给日期一个小的时间容差，避免时区或入库时分秒导致的遗漏
-    if start_dt and end_dt:
-        start_dt = start_dt - timedelta(hours=12)
-        end_dt = end_dt + timedelta(hours=12)
-    size_min, size_max = _ai_parse_size(text)
-    res_info = _ai_parse_resolution(text)
-    album_title = _ai_parse_album(text)
 
-    # 相机 / 镜头
-    camera_kw = None
-    if "相机" in text or "镜头" in text:
-        m = re.search(r"相机[^\w\u4e00-\u9fa5]*([\w\u4e00-\u9fa5\- ]{2,40})", text)
+def _ai_parse_camera_keyword(text: str) -> str | None:
+    """从自然语言中提取相机/镜头/机型关键字（用于结构化过滤），避免被当成普通关键词导致过度收缩。"""
+    if not text:
+        return None
+
+    # “相机 XXX / 镜头 XXX”
+    if "相机" in text or "镜头" in text or "机型" in text:
+        m = re.search(r"(?:相机|机型)[^\w\u4e00-\u9fa5]*([\w\u4e00-\u9fa5\- ]{2,40})", text)
         if not m:
             m = re.search(r"镜头[^\w\u4e00-\u9fa5]*([\w\u4e00-\u9fa5\- ]{2,40})", text)
         if m:
-            camera_kw = m.group(1).strip()
+            return (m.group(1) or "").strip() or None
+
     # “用 XXX 拍的”
-    if camera_kw is None:
-        m = re.search(r"(?:用|使用)([\w\u4e00-\u9fa5\- ]{2,40}?)(?:拍摄|拍的|拍照|拍)", text)
-        if m:
-            camera_kw = m.group(1).strip()
+    m = re.search(r"(?:用|使用)([\w\u4e00-\u9fa5\- ]{2,40}?)(?:拍摄|拍的|拍照|拍)", text)
+    if m:
+        return (m.group(1) or "").strip() or None
+    return None
 
-    q = _query_user_images(user_id, include_deleted=False)
 
-    # 2）关键词过滤
-    valid_keywords: list[str] = []
-    for kw in keywords:
-        kw = (kw or "").strip()
-        if not kw:
+def _keyword_term_condition(user_id: int, term: str):
+    term = (term or "").strip()
+    if not term:
+        return None
+    like = f"%{term}%"
+    return or_(
+        Image.name.ilike(like),
+        Image.description.ilike(like),
+        Image.original_name.ilike(like),
+        Image.folder.ilike(like),
+        Image.tags.any(Tag.name.ilike(like)),
+        Image.albums.any(and_(Album.user_id == user_id, Album.title.ilike(like))),
+        Image.ai_analysis.has(ImageAIAnalysis.caption.ilike(like)),
+        Image.ai_analysis.has(cast(ImageAIAnalysis.labels, String).ilike(like)),
+    )
+
+
+def _nl_extract_keyword_groups(text: str, exclude_terms: set[str] | None = None) -> list[list[str]]:
+    """把自然语言文本拆成 (AND 组) 的 (OR 组)。
+
+    规则：
+    - 明确出现“并且/以及/和/and/&” => 组内 AND；
+    - 明确出现“或/或者/or/|” => 组间 OR；
+    - 未出现 AND 连接词时，默认把多个词按 OR 处理（保持更宽松的召回）。
+    """
+    if not text:
+        return []
+
+    exclude_terms = {t.strip() for t in (exclude_terms or set()) if (t or "").strip()}
+
+    t = str(text)
+    # 标点归一化为空格，避免粘连
+    t = re.sub(r"[，。,.；;:：!！?？()（）\\[\\]{}《》<>]+", " ", t)
+    # 连接词归一化
+    t = re.sub(r"(或者是|或者|或是|或则|还是|\\bor\\b|\\|)", " __OR__ ", t, flags=re.IGNORECASE)
+    t = re.sub(r"(并且|而且|同时|以及|和|且|\\band\\b|&)", " __AND__ ", t, flags=re.IGNORECASE)
+
+    raw_tokens = [x.strip() for x in t.split() if x.strip()]
+    if not raw_tokens:
+        return []
+
+    # 结构化/停用词（避免被当成关键词导致排空）
+    stop_tokens = {
+        "__OR__",
+        "__AND__",
+        "上传",
+        "拍摄",
+        "摄于",
+        "相册",
+        "专辑",
+        "文件夹",
+        "相机",
+        "镜头",
+        "机型",
+        "分辨率",
+        "像素",
+        "大小",
+        "容量",
+        "文件大小",
+        "小于",
+        "大于",
+        "以上",
+        "以下",
+        "不超过",
+        "不少于",
+        "至少",
+        "最多",
+        "照片",
+        "图片",
+        "帮我",
+        "我要",
+        "找",
+        "搜索",
+        "检索",
+    }
+
+    def _looks_structured_token(tok: str) -> bool:
+        if not tok:
+            return True
+        low = tok.lower()
+        if tok in stop_tokens or low in stop_tokens:
+            return True
+        if re.search(r"\d{4}[-./年]\d{1,2}[-./月]\d{1,2}", tok):
+            return True
+        if re.search(r"\d+(?:\.\d+)?\s*(?:k|kb|m|mb|g|gb|兆)\\b", tok, flags=re.IGNORECASE):
+            return True
+        if re.search(r"\d{3,5}\\s*[xX×*]\\s*\\d{3,5}", tok):
+            return True
+        if re.search(r"\d{3,8}\\s*(?:像素|px)\\b", tok, flags=re.IGNORECASE):
+            return True
+        if re.search(r"\\b\\d{3,4}p\\b", low):
+            return True
+        return False
+
+    explicit_and_used = False
+    or_groups: list[list[str]] = [[]]
+    for tok in raw_tokens:
+        if tok == "__OR__":
+            if or_groups[-1]:
+                or_groups.append([])
             continue
-        if len(kw) > 40:
+        if tok == "__AND__":
+            explicit_and_used = True
             continue
-        if kw not in valid_keywords:
-            valid_keywords.append(kw)
 
-    # 从文本中额外提取 #标签
-    hashtag_kws = re.findall(r"#([\w\u4e00-\u9fa5\-]{1,30})", text)
-    for kw in hashtag_kws:
-        kw = (kw or "").strip()
-        if kw and kw not in valid_keywords:
-            valid_keywords.append(kw)
+        tok = tok.strip("“”\"'‘’")
+        if tok.startswith("#"):
+            tok = tok[1:]
+        tok = tok.strip()
+        if not tok:
+            continue
+        if tok in exclude_terms:
+            continue
+        if _looks_structured_token(tok):
+            continue
+        or_groups[-1].append(tok)
 
-    # “标签为/包含标签/有标签”
-    tag_phrase_kws = re.findall(
-        r"(?:标签为|标签是|标签叫|包含标签|带有标签|有标签)[：:\s]*([\u4e00-\u9fa5A-Za-z0-9_\-]{1,30})",
-        text,
-    )
-    for kw in tag_phrase_kws:
-        kw = (kw or "").strip()
-        if kw and kw not in valid_keywords:
-            valid_keywords.append(kw)
+    # 去空组、去重
+    cleaned: list[list[str]] = []
+    for group in or_groups:
+        uniq: list[str] = []
+        for term in group:
+            if term and term not in uniq:
+                uniq.append(term)
+        if uniq:
+            cleaned.append(uniq)
 
-    # “描述为/说明为/caption 为”
-    desc_phrase_kws = re.findall(
-        r"(?:描述为|描述是|说明为|说明是|caption为|caption是)[：:\s]*([\u4e00-\u9fa5A-Za-z0-9_\-]{1,40})",
-        text,
-    )
-    for kw in desc_phrase_kws:
-        kw = (kw or "").strip()
-        if kw and kw not in valid_keywords:
-            valid_keywords.append(kw)
+    if not cleaned:
+        return []
 
-    # “名称/文件名/原图名为”
-    name_phrase_kws = re.findall(
-        r"(?:名称为|名字是|文件名为|原图名为|叫做)\s*([\u4e00-\u9fa5A-Za-z0-9_\-]{1,50})",
-        text,
-    )
-    for kw in name_phrase_kws:
-        kw = (kw or "").strip()
-        if kw and kw not in valid_keywords:
-            valid_keywords.append(kw)
+    if not explicit_and_used:
+        # 默认 OR：把一个组里的多个词拆开，避免“空格导致 AND 过强”
+        flat: list[str] = []
+        for group in cleaned:
+            for term in group:
+                if term and term not in flat:
+                    flat.append(term)
+        return [[t] for t in flat]
+
+    return cleaned
+
+
+def _build_keyword_groups_condition(user_id: int, keyword_groups: list[list[str]]):
+    """把关键词组转换成 SQLAlchemy 条件： (A AND B) OR (C AND D) ..."""
+    if not keyword_groups:
+        return None
+    or_conds = []
+    for group in keyword_groups:
+        and_terms = []
+        for term in group:
+            cond = _keyword_term_condition(user_id, term)
+            if cond is not None:
+                and_terms.append(cond)
+        if and_terms:
+            or_conds.append(and_(*and_terms) if len(and_terms) > 1 else and_terms[0])
+    if not or_conds:
+        return None
+    return or_(*or_conds) if len(or_conds) > 1 else or_conds[0]
+
+
+def _heuristic_keywords_from_text(text: str, max_terms: int = 6) -> list[str]:
+    """不依赖大模型的兜底关键词提取（用于 AI 工作台检索稳定性）。"""
+    t = _normalize_query_text(text)
+    if not t.strip():
+        return []
+
+    # 如果明确在描述相册/文件夹范围，先剔除相册名相关片段，避免把“名为XX的相册中”当成关键词
+    if re.search(r"(相册|专辑|文件夹)", t):
+        album = _ai_parse_album(t)
+        if album:
+            t = re.sub(
+                rf"(?:在|于|从)?\s*(?:名为|叫做|叫|名称为|标题为)?\s*[“\"'‘’]?\s*{re.escape(album)}\s*[”\"'‘’]?\s*(?:的)?\s*(?:相册|专辑|文件夹)(?:中|里|里面)?",
+                " ",
+                t,
+            )
+
+    # 去掉日期/尺寸/分辨率等结构化片段，避免干扰
+    t = re.sub(r"\d{4}[-./年]\d{1,2}[-./月]\d{1,2}", " ", t)
+    t = re.sub(r"\d+(?:\.\d+)?\s*(?:k|kb|m|mb|g|gb|兆)\b", " ", t, flags=re.IGNORECASE)
+    t = re.sub(r"\d{3,5}\s*[xX×*]\s*\d{3,5}", " ", t)
+    t = re.sub(r"\d{3,4}p\b", " ", t, flags=re.IGNORECASE)
+
+    # 常见语气/指令/助词裁剪
+    for w in [
+        "帮我",
+        "请",
+        "麻烦",
+        "我要",
+        "我想",
+        "我需要",
+        "能不能",
+        "可以",
+        "帮忙",
+        "所有",
+        "全部",
+        "并且",
+        "而且",
+        "同时",
+        "以及",
+        "或者",
+        "或是",
+        "还是",
+        "找",
+        "查找",
+        "搜索",
+        "检索",
+        "列出",
+        "显示",
+        "看看",
+        "一下",
+        "相关",
+        "相应",
+        "包含",
+        "主题",
+        "的",
+        "图片",
+        "照片",
+        "相片",
+        "一下子",
+    ]:
+        t = t.replace(w, " ")
+
+    t = re.sub(r"[，。,.；;:：!！?？()（）\[\]{}《》<>]+", " ", t)
+    t = re.sub(r"\s+", " ", t).strip()
+
+    tokens = re.findall(r"[\u4e00-\u9fa5A-Za-z0-9_\-]{2,20}", t)
+    uniq: list[str] = []
+    for tok in tokens:
+        tok = tok.strip("“”\"'‘’ ").strip()
+        if not tok:
+            continue
+        if _is_noise_keyword(tok):
+            continue
+        # 过滤掉明显的“后缀粘连”（例如：相册中/文件夹里）
+        if any(tok.endswith(suf) for suf in ["相册中", "相册里", "专辑中", "专辑里", "文件夹中", "文件夹里"]):
+            continue
+        if tok not in uniq:
+            uniq.append(tok)
+        if len(uniq) >= max_terms:
+            break
+    return uniq
+
+
+def _split_or_segments(text: str) -> list[str]:
+    """按“或/或者/还是/or/|”把文本拆成多个片段，用于实现结构化条件之间的 OR。"""
+    if not text:
+        return []
+    t = _normalize_query_text(text)
+    parts = re.split(r"(?:或者是|或者|或是|或则|还是|\bor\b|\|)", t, flags=re.IGNORECASE)
+    cleaned = [p.strip(" ，。;；:：\n\t") for p in parts if (p or "").strip()]
+    return cleaned or [t.strip()]
+
+
+def _ai_build_clause_condition(user_id: int, text: str, keywords: list[str]):
+    """把单个片段解析成 SQLAlchemy 条件：结构化条件与关键词默认用 AND 组合。"""
+    text = _normalize_query_text(text)
+
+    # 结构化条件
+    start_dt, end_dt, date_field = _ai_parse_date_range(text)
+    size_min, size_max = _ai_parse_size(text)
+    res_info = _ai_parse_resolution(text)
+    album_title = _ai_parse_album(text)
+    camera_kw = _ai_parse_camera_keyword(text)
 
     def _looks_like_date(s: str) -> bool:
         return bool(re.search(r"\d{4}[-./年]\d{1,2}[-./月]\d{1,2}", s))
@@ -1123,50 +1412,27 @@ def _ai_advanced_search(user_id: int, text: str, keywords: list[str], limit: int
         return bool(re.search(r"\d+(?:\.\d+)?\s*(?:k|kb|m|mb|g|gb|兆)\b", s, flags=re.IGNORECASE))
 
     def _looks_like_resolution(s: str) -> bool:
-        return bool(re.search(r"\d{3,5}\s*[xX×*]\s*\d{3,5}", s)) or bool(re.search(r"\d{3,4}p\b", s, flags=re.IGNORECASE))
+        return bool(re.search(r"\d{3,5}\s*[xX×*]\s*\d{3,5}", s)) or bool(
+            re.search(r"\d{3,4}p\b", s, flags=re.IGNORECASE)
+        )
 
-    # 去掉看起来是结构化的词，避免被当做普通关键词覆盖条件
-    filtered_keywords: list[str] = []
-    for kw in valid_keywords:
+    # 关键词（过滤掉结构化/噪声/明显结构化 token）
+    valid_keywords: list[str] = []
+    for kw in keywords or []:
+        kw = (kw or "").strip()
+        if not kw:
+            continue
+        if len(kw) > 40:
+            continue
+        if _is_noise_keyword(kw):
+            continue
         if _looks_like_date(kw) or _looks_like_size(kw) or _looks_like_resolution(kw):
             continue
-        filtered_keywords.append(kw)
-    valid_keywords = filtered_keywords
+        if kw not in valid_keywords:
+            valid_keywords.append(kw)
 
-    # 如果只有一个“日期样式”的关键词，则认为它其实是时间，去掉
-    if len(valid_keywords) == 1 and _looks_like_date(valid_keywords[0]):
-        valid_keywords = []
-
-    # 没有关键词、也没有日期时，从原始句子里兜底抽几个词
-    if not valid_keywords and not has_date:
-        fallback_terms: list[str] = []
-        for p in re.split(r"[\s,，。;；]+", text):
-            token = p.strip()
-            if _looks_like_date(token):
-                continue
-            if 1 < len(token) <= 30:
-                fallback_terms.append(token)
-        for token in re.findall(r"[\u4e00-\u9fa5A-Za-z0-9]{2,8}", text):
-            if _looks_like_date(token):
-                continue
-            fallback_terms.append(token)
-        for kw in fallback_terms:
-            kw = kw.strip()
-            if kw and kw not in valid_keywords:
-                valid_keywords.append(kw)
-
-    # 3）相册名称推断：如果 _ai_parse_album 没识别到，就用关键词去数据库里匹配一次
-    if album_title is None:
-        for kw in valid_keywords:
-            album = Album.query.filter(
-                Album.user_id == user_id,
-                Album.title.ilike(f"%{kw}%"),
-            ).first()
-            if album:
-                album_title = album.title
-                break
-
-    # 已经识别到相册名时，从关键词里移除，避免被当作普通关键词重复过滤
+    # 相册条件：优先用文本解析结果
+    album_cond = None
     if album_title:
         valid_keywords = [kw for kw in valid_keywords if kw.strip() != album_title]
         album_cond = or_(
@@ -1181,10 +1447,7 @@ def _ai_advanced_search(user_id: int, text: str, keywords: list[str], limit: int
                 )
             ),
         )
-    else:
-        album_cond = None
 
-    # 4）收集结构化条件
     structured_conds = []
     if album_cond is not None:
         structured_conds.append(album_cond)
@@ -1197,7 +1460,6 @@ def _ai_advanced_search(user_id: int, text: str, keywords: list[str], limit: int
         min_b = size_min
         max_b = size_max
         if min_b is not None and max_b is not None and min_b == max_b:
-            # 单点取值时给个容差，兼容四舍五入与压缩差异
             tol = max(int(min_b * 0.1), 500 * 1024)
             min_b = max(0, min_b - tol)
             max_b = max_b + tol
@@ -1216,43 +1478,91 @@ def _ai_advanced_search(user_id: int, text: str, keywords: list[str], limit: int
             structured_conds.append(Image.height >= res_info["height"])
 
     if camera_kw:
-        structured_conds.append(
-            or_(
-                Image.camera.ilike(f"%{camera_kw}%"),
-                Image.lens.ilike(f"%{camera_kw}%"),
-            )
-        )
+        structured_conds.append(or_(Image.camera.ilike(f"%{camera_kw}%"), Image.lens.ilike(f"%{camera_kw}%")))
 
-    # 5）构造关键词条件
     keyword_cond = None
     if valid_keywords:
         conds = []
         for kw in valid_keywords:
-            like = f"%{kw}%"
-            conds.append(Image.name.ilike(like))
-            conds.append(Image.description.ilike(like))
-            conds.append(Image.original_name.ilike(like))
-            conds.append(Image.tags.any(Tag.name.ilike(like)))
+            cond = _keyword_term_condition(user_id, kw)
+            if cond is not None:
+                conds.append(cond)
         if conds:
             keyword_cond = or_(*conds)
 
-    # 6）根据自然语言连接词组合 AND / OR
-    logic_mode = _ai_detect_logic_mode(text)
-    has_structured = bool(structured_conds)
-    has_keyword = keyword_cond is not None
+    if structured_conds and keyword_cond is not None:
+        return and_(and_(*structured_conds), keyword_cond)
+    if structured_conds:
+        return and_(*structured_conds)
+    if keyword_cond is not None:
+        return keyword_cond
+    return None
 
-    if has_structured and has_keyword:
-        if logic_mode == "or":
-            # “上传时间为 A 或包含标签 B”
-            q = q.filter(or_(and_(*structured_conds), keyword_cond))
+
+
+
+def _ai_advanced_search(user_id: int, text: str, keywords: list[str], limit: int = 12) -> list[dict]:
+    """结合关键词与简单结构化条件进行搜索。
+
+    支持：
+    - 上传时间 / 拍摄时间；
+    - 文件大小；
+    - 分辨率；
+    - 相册名 / 文件夹；
+    - 相机 / 镜头；
+    - 名称 / 描述 / 原始文件名 / 标签 的关键词匹配；
+    并且可以通过“并且/或者”等词控制结构化条件与关键词的 AND / OR 关系。
+    """
+    q = _query_user_images(user_id, include_deleted=False)
+    logic_mode = _ai_detect_logic_mode(text)
+    if logic_mode == "or":
+        clause_conds = []
+        for seg in _split_or_segments(text):
+            seg_kws: list[str] = []
+            seg_kws.extend(_heuristic_keywords_from_text(seg, max_terms=6))
+            for kw in keywords or []:
+                kw = (kw or "").strip()
+                if kw and kw in seg and kw not in seg_kws:
+                    seg_kws.append(kw)
+            cond = _ai_build_clause_condition(user_id, seg, seg_kws)
+            if cond is not None:
+                clause_conds.append(cond)
+        if clause_conds:
+            q = q.filter(or_(*clause_conds))
         else:
-            # 默认 / 并且 / 同时 / 以及 / 又 => 交集
-            q = q.filter(and_(*structured_conds))
-            q = q.filter(keyword_cond)
-    elif has_structured:
-        q = q.filter(and_(*structured_conds))
-    elif has_keyword:
-        q = q.filter(keyword_cond)
+            return []
+    else:
+        cond = _ai_build_clause_condition(user_id, text, keywords or [])
+        if cond is not None:
+            q = q.filter(cond)
+
+    if current_app.config.get("AI_SEARCH_DEBUG"):
+        try:
+            from sqlalchemy.dialects import mysql
+
+            current_app.logger.info(
+                "AI_SEARCH_DEBUG user_id=%s text=%s parsed_date=%s..%s field=%s album=%s camera=%s size=%s..%s res=%s valid_keywords=%s has_structured=%s has_keyword=%s logic=%s",
+                user_id,
+                text,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                keywords,
+                None,
+                None,
+                logic_mode,
+            )
+            current_app.logger.info(
+                "AI_SEARCH_DEBUG SQL=%s",
+                str(q.statement.compile(dialect=mysql.dialect(), compile_kwargs={"literal_binds": True})),
+            )
+        except Exception:
+            current_app.logger.exception("AI_SEARCH_DEBUG failed")
 
     items = q.order_by(Image.created_at.desc()).limit(limit).all()
     return [
@@ -1277,11 +1587,9 @@ def _search_by_keywords(user_id: int, keywords: list[str], limit: int = 8) -> li
     for kw in keywords:
         if not kw:
             continue
-        like = f"%{kw}%"
-        conds.append(Image.name.ilike(like))
-        conds.append(Image.description.ilike(like))
-        conds.append(Image.original_name.ilike(like))
-        conds.append(Image.tags.any(Tag.name.ilike(like)))
+        cond = _keyword_term_condition(user_id, kw)
+        if cond is not None:
+            conds.append(cond)
     if conds:
         q = q.filter(or_(*conds))
     items = q.order_by(Image.created_at.desc()).limit(limit).all()
@@ -1630,15 +1938,84 @@ def search_images():
     query = _query_user_images(user_id, include_deleted=False)
 
     if keyword:
-        kw = f"%{keyword}%"
-        query = query.filter(
-            or_(
-                Image.name.ilike(kw),
-                Image.original_name.ilike(kw),
-                Image.tags.any(Tag.name.ilike(kw)),
-                Image.albums.any(and_(Album.user_id == user_id, Album.title.ilike(kw))),
+        structured_conds = []
+        exclude_terms: set[str] = set()
+
+        # 从自然语言里推断结构化条件（不覆盖用户显式传入的参数）
+        inferred_album = _ai_parse_album(keyword)
+        if inferred_album and not album_titles:
+            exclude_terms.add(inferred_album)
+            structured_conds.append(
+                or_(
+                    Image.albums.any(and_(Album.user_id == user_id, Album.title.ilike(f"%{inferred_album}%"))),
+                    Image.folder.ilike(f"%{inferred_album}%"),
+                )
             )
-        )
+
+        camera_param = (request.args.get("camera") or "").strip()
+        lens_param = (request.args.get("lens") or "").strip()
+        inferred_camera = _ai_parse_camera_keyword(keyword)
+        if inferred_camera and not (camera_param or lens_param):
+            exclude_terms.add(inferred_camera)
+            structured_conds.append(
+                or_(
+                    Image.camera.ilike(f"%{inferred_camera}%"),
+                    Image.lens.ilike(f"%{inferred_camera}%"),
+                )
+            )
+
+        start_dt, end_dt, date_field = _ai_parse_date_range(keyword)
+        if start_dt and end_dt:
+            if date_field == "taken":
+                if captured_start is None and captured_end is None:
+                    structured_conds.append(Image.taken_at.isnot(None))
+                    structured_conds.append(Image.taken_at >= start_dt)
+                    structured_conds.append(Image.taken_at <= end_dt)
+            else:
+                if uploaded_start is None and uploaded_end is None:
+                    structured_conds.append(Image.created_at >= start_dt)
+                    structured_conds.append(Image.created_at <= end_dt)
+
+        size_min_b, size_max_b = _ai_parse_size(keyword)
+        if size_min_b is not None or size_max_b is not None:
+            min_b = size_min_b
+            max_b = size_max_b
+            if min_b is not None and max_b is not None and min_b == max_b:
+                tol = max(int(min_b * 0.1), 500 * 1024)
+                min_b = max(0, min_b - tol)
+                max_b = max_b + tol
+            if min_b is not None:
+                structured_conds.append(Image.size >= min_b)
+            if max_b is not None:
+                structured_conds.append(Image.size <= max_b)
+
+        res_info = _ai_parse_resolution(keyword)
+        if res_info:
+            if res_info.get("pixels"):
+                res_expr = func.coalesce(Image.width, 0) * func.coalesce(Image.height, 0)
+                structured_conds.append(res_expr >= res_info["pixels"])
+            if res_info.get("width"):
+                structured_conds.append(Image.width >= res_info["width"])
+            if res_info.get("height"):
+                structured_conds.append(Image.height >= res_info["height"])
+
+        # 把剩余内容当关键词（支持 AND/OR，自带停用词与结构化 token 过滤）
+        keyword_groups = _nl_extract_keyword_groups(keyword, exclude_terms=exclude_terms)
+        keyword_cond = _build_keyword_groups_condition(user_id, keyword_groups)
+
+        logic_mode = _ai_detect_logic_mode(keyword)
+        if structured_conds and keyword_cond is not None:
+            if logic_mode == "or":
+                query = query.filter(or_(and_(*structured_conds), keyword_cond))
+            else:
+                query = query.filter(and_(*structured_conds)).filter(keyword_cond)
+        elif structured_conds:
+            query = query.filter(and_(*structured_conds))
+        elif keyword_cond is not None:
+            query = query.filter(keyword_cond)
+        else:
+            # 用户确实输入了 keyword，但内容全是连接词/结构化触发词时，不应退化为“返回全部”
+            query = query.filter(Image.id == -1)
 
     for tag_name in tag_names:
         query = query.filter(Image.tags.any(Tag.name == tag_name))
@@ -1757,6 +2134,20 @@ def image_stats():
             "recycle_count": recycle_count,
         }
     )
+
+
+@images_bp.get("/quota")
+def image_quota():
+    user_id = _current_user_id()
+    image_count, used_bytes = (
+        db.session.query(
+            func.count(Image.id),
+            func.coalesce(func.sum(Image.size), 0),
+        )
+        .filter(Image.user_id == user_id, Image.deleted_at.is_(None))
+        .one()
+    )
+    return jsonify({"message": "ok", "image_count": int(image_count or 0), "used_bytes": int(used_bytes or 0)})
 
 
 @images_bp.get("/recycle")
@@ -2169,8 +2560,10 @@ def ai_chat_search():
     if not user_text:
         return jsonify({"message": "缺少用户输入"}), 400
 
+    # 关键词：本地兜底优先，避免外部模型抖动导致“明明有图却搜不到”
+    keywords_local = _heuristic_keywords_from_text(user_text, max_terms=6)
+    keywords_ai: list[str] = []
     try:
-        # 先用小模型抽关键词
         kw_prompt = (
             "请把这句话提炼 3~5 个中文关键词，用 JSON 返回："
             '{"keywords":["k1","k2"],"style":[]}。'
@@ -2182,17 +2575,43 @@ def ai_chat_search():
                 {"role": "user", "content": kw_prompt},
             ]
         )
-        keywords, _ = _parse_ai_json(kw_raw)
-        if not keywords:
-            keywords = [user_text.strip()][:3]
+        keywords_ai, _ = _parse_ai_json(kw_raw)
+    except Exception:
+        current_app.logger.exception("ai keyword extraction failed")
+        keywords_ai = []
 
+    keywords: list[str] = []
+    for kw in (keywords_local or []) + (keywords_ai or []):
+        kw = (kw or "").strip()
+        if not kw:
+            continue
+        if len(kw) > 40:
+            continue
+        if _is_noise_keyword(kw):
+            continue
+        if kw not in keywords:
+            keywords.append(kw)
+        if len(keywords) >= 8:
+            break
+    if not keywords:
+        keywords = [user_text.strip()][:3]
+
+    try:
         results = _ai_advanced_search(user_id, user_text, keywords, limit=8)
+    except Exception as exc:
+        current_app.logger.exception("ai search failed")
+        return jsonify({"message": "AI 检索失败", "error": str(exc)}), 500
 
-        # 然后再让大模型用对话方式总结检索结果
+    # 回复：优先调用大模型总结；失败时用本地兜底，保证可用性
+    reply = ""
+    try:
         reply_prompt = (
-            "你是图片管家，根据候选图片列出最相关的项，用中文简短回复。"
-            "只引用给定的图片 id 和名称，不要编造。"
-            f"用户问：{user_text}\n候选：{json.dumps(results, ensure_ascii=False)}"
+            "你是图片管家，根据候选图片用中文简短回复。\n"
+            "规则：\n"
+            "1) 只能引用候选里的图片 id 和 name，不要编造。\n"
+            "2) 如果候选非空：必须至少列出 1 张（最多 5 张），不要说“没有/未找到”。\n"
+            "3) 如果候选为空：才可以说没有找到。\n"
+            f"用户问：{user_text}\n候选数量：{len(results)}\n候选：{json.dumps(results, ensure_ascii=False)}"
         )
         reply = _qwen_chat(
             [
@@ -2200,8 +2619,20 @@ def ai_chat_search():
                 {"role": "user", "content": reply_prompt},
             ]
         )
+    except Exception:
+        current_app.logger.exception("ai reply generation failed")
+        reply = ""
 
-        return jsonify({"message": "ok", "reply": reply, "keywords": keywords, "images": results})
-    except Exception as exc:
-        current_app.logger.exception("ai chat search failed")
-        return jsonify({"message": "AI 检索失败", "error": str(exc)}), 500
+    if not reply:
+        if not results:
+            reply = "没有找到相关图片。"
+        else:
+            top = results[: min(5, len(results))]
+            reply = "我找到了这些图片：" + "，".join([f"{it.get('id')} {it.get('name')}" for it in top if it.get("id")])
+
+    # 兜底：候选非空但模型仍回复“没有”，避免前端出现“有图但说没图”的矛盾体验
+    if results and re.search(r"(没有|未找到|找不到|无相关)", reply or ""):
+        top = results[: min(5, len(results))]
+        reply = "我找到了这些图片：" + "，".join([f"{it.get('id')} {it.get('name')}" for it in top if it.get("id")])
+
+    return jsonify({"message": "ok", "reply": reply, "keywords": keywords, "images": results})

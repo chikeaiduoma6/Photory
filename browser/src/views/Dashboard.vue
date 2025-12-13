@@ -4,6 +4,8 @@ import axios from 'axios'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
+import { usePreferencesStore } from '@/stores/preferences'
+import { getNavLinks } from '@/utils/navLinks'
 
 interface GalleryImage {
   id: number
@@ -12,6 +14,7 @@ interface GalleryImage {
   thumbUrl: string
   fullUrl: string
   tags?: string[]
+   tag_objects?: { id: number; name: string; color?: string | null }[]
 }
 
 const router = useRouter()
@@ -39,15 +42,8 @@ const tasksCount = computed(() => todayDeleted.value)
 const hasImages = computed(() => images.value.length > 0)
 const galleryClass = computed(() => ['gallery', hasImages.value ? viewMode.value : 'empty'])
 
-const links = [
-  { label: '首页', icon: '🏠', path: '/' },
-  { label: '搜索引擎', icon: '🔎', path: '/search' },
-  { label: '上传中心', icon: '☁️', path: '/upload' },
-  { label: '标签', icon: '🏷️', path: '/tags' },
-  { label: '相册', icon: '📚', path: '/albums' },
-  { label: 'AI 工作台', icon: '🤖', path: '/ai' },
-  { label: '回收站', icon: '🗑️', path: '/recycle' },
-]
+const preferencesStore = usePreferencesStore()
+const links = computed(() => getNavLinks(preferencesStore.language))
 
 const currentPath = computed(() => router.currentRoute.value.path)
 function go(path: string) {
@@ -80,7 +76,16 @@ function mapImage(item: any): GalleryImage {
     thumbUrl: withBase((item.thumb_url || `/api/v1/images/${item.id}/thumb`) + tokenParam),
     fullUrl: withBase((item.raw_url || `/api/v1/images/${item.id}/raw`) + tokenParam),
     displayName: item.name || item.original_name,
+    tag_objects: item.tag_objects || item.tags?.map((t: string, idx: number) => ({ id: idx, name: t })),
+    tags: item.tags || [],
   }
+}
+
+function normalizeTagColor(raw?: string | null) {
+  if (!raw) return '#ff8bb3'
+  const hex = raw.match(/^#([0-9a-fA-F]{6})/)
+  if (hex) return `#${hex[1]}`
+  return '#ff8bb3'
 }
 
 async function fetchImages() {
@@ -396,8 +401,24 @@ onUnmounted(stopSlider)
           <img :src="img.thumbUrl" :alt="img.displayName" loading="lazy" @error="fallbackToRaw($event, img.fullUrl)" />
 
           <div class="caption">
-            <div class="title">{{ img.displayName }}</div>
-            <div class="date">{{ img.created_at?.slice(0, 10) }}</div>
+            <div class="caption-top">
+              <div class="title">{{ img.displayName }}</div>
+              <div class="date">{{ img.created_at?.slice(0, 10) }}</div>
+            </div>
+            <div class="tag-row" v-if="(img.tag_objects && img.tag_objects.length) || (img.tags && img.tags.length)">
+              <span
+                class="tag-chip"
+                v-for="tag in (img.tag_objects?.length ? img.tag_objects : (img.tags || []).map((t, i) => ({ id: i, name: t })))"
+                :key="tag.id ?? tag.name"
+                :style="{
+                  borderColor: normalizeTagColor((tag as any).color),
+                  background: normalizeTagColor((tag as any).color) + '22',
+                  color: '#b05f7a',
+                }"
+              >
+                {{ tag.name }}
+              </span>
+            </div>
           </div>
         </div>
       </section>
@@ -850,8 +871,14 @@ main {
 .caption {
   padding: 10px 14px;
   display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.caption-top {
+  display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 8px;
 }
 .caption .title {
   font-size: 13px;
@@ -864,6 +891,20 @@ main {
 .caption .date {
   font-size: 11px;
   color: #b57a90;
+}
+.tag-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid #ff8bb3;
+  font-size: 11px;
+  background: #ffeef5;
 }
 .photo.batch-mode::after {
   content: '';

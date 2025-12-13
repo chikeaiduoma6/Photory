@@ -4,6 +4,8 @@ import axios from 'axios'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
+import { usePreferencesStore } from '@/stores/preferences'
+import { getNavLinks } from '@/utils/navLinks'
 
 interface Image {
   id: number
@@ -66,10 +68,9 @@ const selectingImages = ref(false)
 const availablePage = ref(1)
 const availablePageSize = ref(30)
 const availableTotal = ref(0)
-const viewMode = ref<'grid' | 'list' | 'masonry' | 'large'>('grid')
+const viewMode = ref<'grid' | 'masonry' | 'large'>('grid')
 const viewModeClass = computed(() => {
   if (viewMode.value === 'grid') return 'images-grid'
-  if (viewMode.value === 'list') return 'images-list'
   return viewMode.value
 })
 
@@ -91,15 +92,8 @@ function enterCarouselMode() {
   }
 }
 
-const links = [
-  { label: '首页', icon: '🏠', path: '/' },
-  { label: '搜索引擎', icon: '🔍', path: '/search' },
-  { label: '上传中心', icon: '☁️', path: '/upload' },
-  { label: '标签', icon: '🏷️', path: '/tags' },
-  { label: '相册', icon: '📚', path: '/albums' },
-  { label: 'AI 工作台', icon: '🤖', path: '/ai' },
-  { label: '回收站', icon: '🗑️', path: '/recycle' },
-]
+const preferencesStore = usePreferencesStore()
+const links = computed(() => getNavLinks(preferencesStore.language))
 
 async function fetchAlbum() {
   loading.value = true
@@ -229,6 +223,13 @@ function formatDate(dateString: string): string {
   return dateString.slice(0, 10)
 }
 
+function normalizeTagColor(raw?: string | null) {
+  if (!raw) return '#ff8bb3'
+  const hex = raw.match(/^#([0-9a-fA-F]{6})/i)
+  if (hex) return `#${hex[1]}`
+  return '#ff8bb3'
+}
+
 onMounted(() => {
   fetchAlbum()
   fetchAlbumImages()
@@ -336,13 +337,6 @@ watch(() => albumId.value, () => {
               </button>
               <button
                 class="view-btn"
-                :class="{ active: viewMode === 'list' }"
-                @click="viewMode = 'list'"
-              >
-                📋 列表
-              </button>
-              <button
-                class="view-btn"
                 :class="{ active: viewMode === 'masonry' }"
                 @click="viewMode = 'masonry'"
               >
@@ -400,20 +394,27 @@ watch(() => albumId.value, () => {
               </div>
             </div>
             <div class="image-info">
-              <div class="image-name">{{ image.original_name }}</div>
-              <div class="image-meta basic-meta">
-                <span class="meta-item">上传: {{ formatDate(image.created_at) }}</span>
-                <div class="tag-list" v-if="image.tag_objects?.length">
-                  <span class="tag-chip" v-for="tag in image.tag_objects" :key="tag.id">
-                    {{ tag.name }}
-                  </span>
-                </div>
+              <div class="caption-top">
+                <div class="image-name">{{ image.name || image.original_name }}</div>
+                <div class="date">{{ formatDate(image.created_at) }}</div>
               </div>
-              <div v-if="viewMode === 'list'" class="image-meta">
-                <span class="meta-item">尺寸: {{ image.width }} × {{ image.height }}</span>
-                <span class="meta-item">大小: {{ image.size }}</span>
-                <span class="meta-item">创建日期: {{ formatDate(image.created_at) }}</span>
-              </div>
+              <div
+                class="tag-row"
+                v-if="(image.tag_objects && image.tag_objects.length) || (image.tags && image.tags.length)"
+              >
+                <span
+                  class="tag-chip"
+                  v-for="tag in (image.tag_objects?.length ? image.tag_objects : (image.tags || []).map((t, i) => ({ id: i, name: t })))"
+                  :key="tag.id ?? tag.name"
+                  :style="{
+                    borderColor: normalizeTagColor((tag as any).color),
+                    background: normalizeTagColor((tag as any).color) + '22',
+                    color: '#b05f7a',
+                  }"
+              >
+                {{ tag.name }}
+              </span>
+            </div>
             </div>
           </div>
         </div>
@@ -657,97 +658,40 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 100vh; }
   opacity: 0.8;
 }
 
-/* 列表模式样式 */
-.images-list {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  margin-bottom: 20px;
-}
-
-.images-list .image-card {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 8px;
-  border-radius: 12px;
-  background: rgba(255, 240, 245, 0.5);
-}
-
-.images-list .image-wrapper {
-  width: 80px;
-  height: 80px;
-  flex-shrink: 0;
-}
-
-.images-list .image-info {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.images-list .image-name {
-  font-weight: 500;
-  color: #ff4c8a;
-}
-
-.image-meta {
-  display: flex;
-  gap: 16px;
-  font-size: 12px;
-  color: #a36e84;
-}
-.image-meta.basic-meta {
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-}
-
-.meta-item {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-.tag-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.tag-chip {
-  background: #ffeef5;
-  color: #c25585;
-  padding: 2px 8px;
-  border-radius: 999px;
-  font-size: 12px;
-  border: 1px solid rgba(255, 190, 210, 0.7);
-}
+/* 标签行 */
+.tag-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.tag-chip { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; border: 1px solid #ff8bb3; font-size: 11px; background: #ffeef5; color: #b05f7a; }
 
 /* 瀑布流模式样式 */
 .images-container.masonry {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  grid-auto-rows: minmax(100px, auto);
-  grid-gap: 1rem;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-auto-rows: minmax(140px, auto);
+  grid-gap: 18px;
   grid-auto-flow: dense;
   margin-bottom: 20px;
 }
 
 .images-container.masonry .image-card {
   position: relative;
-  border-radius: 12px;
+  border-radius: 18px;
   overflow: hidden;
-  box-shadow: 0 4px 12px rgba(255,153,187,0.12);
-  transition: transform 0.2s ease;
+  box-shadow: 0 10px 20px rgba(255,153,187,0.2);
+  background: #ffeaf3;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  display: flex;
+  flex-direction: column;
 }
 
 .images-container.masonry .image-card:hover {
   transform: translateY(-2px);
+  box-shadow: 0 14px 26px rgba(255,153,187,0.32);
 }
 
 .images-container.masonry .image-wrapper {
   aspect-ratio: unset;
   overflow: hidden;
+  position: relative;
 }
 
 .images-container.masonry .image-wrapper img {
@@ -757,14 +701,14 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 100vh; }
 }
 
 .images-container.masonry .image-info {
-  padding: 8px;
-  background: rgba(255, 240, 245, 0.5);
+  padding: 10px 14px;
+  background: #ffeef5;
 }
 
 .images-container.masonry .image-name {
   font-size: 14px;
   font-weight: 500;
-  color: #ff4c8a;
+  color: #613448;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -774,43 +718,47 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 100vh; }
 .images-container.large {
   display: grid;
   grid-template-columns: 1fr;
-  gap: 1.5rem;
+  gap: 18px;
   margin-bottom: 20px;
 }
 
 .images-container.large .image-card {
   background-color: rgba(255,255,255,0.95);
-  border-radius: 12px;
+  border-radius: 18px;
   overflow: hidden;
-  box-shadow: 0 4px 12px rgba(255,153,187,0.12);
-  transition: transform 0.2s ease;
+  box-shadow: 0 10px 20px rgba(255,153,187,0.2);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  display: flex;
+  flex-direction: column;
 }
 
 .images-container.large .image-card:hover {
   transform: translateY(-2px);
+  box-shadow: 0 14px 26px rgba(255,153,187,0.32);
 }
 
 .images-container.large .image-wrapper {
   aspect-ratio: unset;
   overflow: hidden;
+  position: relative;
 }
 
 .images-container.large .image-wrapper img {
   width: 100%;
   height: auto;
-  max-height: 500px;
+  max-height: 520px;
   object-fit: cover;
 }
 
 .images-container.large .image-info {
   padding: 1rem;
-  background: rgba(255, 240, 245, 0.5);
+  background: #ffeef5;
 }
 
 .images-container.large .image-name {
   font-size: 1.2rem;
   font-weight: 500;
-  color: #ff4c8a;
+  color: #613448;
   margin-bottom: 0.5rem;
 }
 
@@ -822,23 +770,20 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 100vh; }
   color: #a36e84;
 }
 
-.images-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px; margin-bottom: 20px; }
-.image-card { position: relative; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 12px rgba(255,153,187,0.12); }
-.image-wrapper { cursor: pointer; aspect-ratio: 1; overflow: hidden; }
-.image-wrapper img { width: 100%; height: 100%; object-fit: cover; transition: transform 0.2s; }
-.image-wrapper:hover img { transform: scale(1.05); }
-.image-actions { position: absolute; bottom: 8px; right: 8px; display: flex; gap: 4px; }
+.images-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 18px; margin-bottom: 20px; }
+.image-card { position: relative; border-radius: 18px; overflow: hidden; box-shadow: 0 10px 20px rgba(255,153,187,0.2); background: #ffeaf3; display: flex; flex-direction: column; transition: transform 0.15s ease, box-shadow 0.15s ease; }
+.image-card:hover { transform: translateY(-3px); box-shadow: 0 14px 26px rgba(255,153,187,0.32); }
+.image-wrapper { cursor: pointer; aspect-ratio: 4 / 3; overflow: hidden; background: #fce6f0; position: relative; }
+.image-wrapper img { width: 100%; height: 100%; object-fit: cover; transition: transform 0.2s; display: block; }
+.image-wrapper:hover img { transform: scale(1.04); }
+.image-actions { position: absolute; top: 10px; right: 10px; display: flex; gap: 6px; z-index: 2; }
+.image-actions .icon-btn { width: 34px; height: 34px; border-radius: 50%; background: rgba(255, 255, 255, 0.92); color: #ff4c8a; box-shadow: 0 6px 12px rgba(0,0,0,0.08); border: 1px solid rgba(255, 180, 205, 0.8); display: inline-flex; align-items: center; justify-content: center; }
+.image-actions .icon-btn:hover { background: #ffeef5; }
 
-.images-grid .image-info {
-  padding: 8px;
-  background: rgba(255, 240, 245, 0.5);
-}
-
-.images-grid .image-name {
-  font-size: 14px;
-  font-weight: 500;
-  color: #ff4c8a;
-}
+.images-grid .image-info { padding: 12px 14px; background: #ffeef5; display: flex; flex-direction: column; gap: 6px; }
+.caption-top { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.images-grid .image-name { font-size: 13px; font-weight: 500; color: #613448; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.images-grid .date { font-size: 11px; color: #b57a90; }
 
 .pagination { display: flex; justify-content: center; align-items: center; gap: 16px; margin-top: 20px; }
 .page-btn { background: rgba(255,255,255,0.65); border: 1px solid rgba(255, 190, 210, 0.7); border-radius: 8px; padding: 6px 16px; cursor: pointer; font-size: 14px; color: #8c546e; }
@@ -901,6 +846,7 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 100vh; }
   .album-info-section, .images-section { margin: 16px; }
   .album-info { flex-direction: column; text-align: center; }
   .images-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+  .images-container.masonry { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
 }
 
 @media (max-width: 640px) {
@@ -908,6 +854,7 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 100vh; }
   .sort-options { flex-direction: column; align-items: flex-end; gap: 4px; }
   .actions-bar { flex-direction: column; align-items: flex-start; gap: 8px; }
   .images-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+  .images-container.masonry { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
   .image-meta {
     flex-direction: column;
     gap: 2px;

@@ -44,6 +44,25 @@ class User(db.Model):
             "created_at": self.created_at.isoformat(),
         }
 
+
+class LoginEvent(db.Model):
+    __tablename__ = "login_events"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    ip = db.Column(db.String(64), nullable=True)
+    user_agent = db.Column(db.String(255), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "user_id": self.user_id,
+            "ip": self.ip,
+            "user_agent": self.user_agent,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
 image_tags = db.Table(
     "image_tags",
     db.Column("image_id", db.Integer, db.ForeignKey("images.id"), primary_key=True),

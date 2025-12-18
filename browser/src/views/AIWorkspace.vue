@@ -6,6 +6,7 @@ import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { usePreferencesStore } from '@/stores/preferences'
 import { getNavLinks } from '@/utils/navLinks'
+import { useLocale } from '@/composables/useLocale'
 
 const router = useRouter()
 const authStore = useAuthStore()
@@ -13,6 +14,7 @@ const username = computed(() => authStore.user?.username || '访客')
 const apiBase = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '')
 const withBase = (p: string) => (!p ? '' : p.startsWith('http') ? p : `${apiBase}${p}`)
 const tokenParam = computed(() => (authStore.token ? `?jwt=${authStore.token}` : ''))
+const { text } = useLocale()
 
 interface ChatMessage { role: 'user' | 'assistant'; content: string; images?: any[] }
 const messages = ref<ChatMessage[]>([
@@ -35,45 +37,29 @@ const hintGroups: HintGroup[] = [
     title: '组合逻辑（AND / OR）',
     desc: '用“并且/同时/以及”做交集，用“或者/或/还是”做并集；支持混合：A 或者 B 并且 C = A OR (B AND C)。',
     examples: [
-      '在风景相册里并且上传于2025-12-4并且文件大小小于300KB',
-      '上传于2025-12-4或者在风景相册里',
-      '在风景相册里或者上传于2025-12-4并且cute',
+      '在风景相册里或包含落叶的图片',
+      '上传于2025-11-28并且文件大小小于1MB的图片',
     ],
   },
   {
-    title: '相册 / 文件夹',
-    desc: '支持“在…相册/专辑/文件夹里/中”，也支持引号与英文写法。',
-    examples: ['在风景相册里', '请找在名为“风景”的相册中的图片', 'album: 风景'],
+    title: '相册',
+    desc: '支持“在…相册里/中”，也支持引号写法。',
+    examples: ['在风景相册里', '请找在名为“风景”的相册中的图片'],
   },
   {
     title: '时间（上传 / 拍摄）',
     desc: '“上传/上传于”会触发上传时间过滤，“拍摄/摄于”会触发拍摄时间过滤，日期支持多种格式。',
-    examples: ['请列出2025-12-4上传的图片', '拍摄于2025年12月4日的照片', '上传于2025/12/4并且日落'],
+    examples: ['请列出2025-12-4上传的图片', '拍摄于2025/12/13的图片', '上传于2025年12月18日的图片'],
   },
   {
     title: '文件大小',
     desc: '必须带单位（KB/MB/GB/兆），支持小于/大于/区间。',
-    examples: ['文件大小小于300KB的图片', '找大于2MB的图片', '找300KB-2MB之间的图片并且在风景相册里'],
+    examples: ['文件大小小于400KB的图片', '找一下大于1MB的图片', '为我列出400KB-1MB之间的图片'],
   },
   {
-    title: '分辨率',
-    desc: '支持“宽x高”、像素/px、4k/2k/1080p 等写法（按至少阈值过滤）。',
-    examples: ['分辨率大于1920x1080的图片', '4k并且小于2MB', '1080p并且日落'],
-  },
-  {
-    title: '相机 / 镜头',
-    desc: '支持“相机…/镜头…”或“用…拍的”。',
-    examples: ['用iPhone拍的图片', '相机 Nikon 并且 4k', '镜头 24-70 并且 拍摄于2025-12-4'],
-  },
-  {
-    title: 'AI 标签 / AI 描述',
-    desc: '如果图片已生成 AI 标签/描述，也可以用关键词匹配到。',
-    examples: ['AI描述里包含“树木”的图片', 'AI标签包含“sunset”的图片', 'AI描述里包含“海边”并且在风景相册里'],
-  },
-  {
-    title: '图片关键词（名称/标签/描述）',
-    desc: '支持图片名称、自定义标签、自定义描述的关键词匹配，也支持 #标签。',
-    examples: ['日落', '#日落', '在风景相册里并且日落并且小于1MB'],
+    title: '关键词',
+    desc: '支持关键词匹配图片名称、自定义标签/描述，以及 AI 标签/AI 描述；也支持 #标签，可与结构化条件组合查询。',
+    examples: ['请找出图片名称为cute_cat的图片', '请找出大海相关的图片', '请找出包含#日落标签的图片'],
   },
 ]
 
@@ -106,14 +92,6 @@ function usePrompt(p: string) {
 function fillPrompt(p: string) {
   input.value = p
   nextTick(() => inputRef.value?.focus())
-}
-async function copyPrompt(p: string) {
-  try {
-    await navigator.clipboard.writeText(p)
-    ElMessage.success('已复制到剪贴板')
-  } catch {
-    ElMessage.warning('复制失败，请手动复制')
-  }
 }
 function openImage(id: number) {
   router.push(`/images/${id}`)
@@ -150,18 +128,18 @@ const closeNav = () => (navOpen.value = false)
         <button class="icon-btn ghost" @click="toggleNav">☰</button>
         <div class="mobile-brand">
           <span class="logo-mini">📸</span>
-          <span>AI 工作台</span>
+          <span>{{ text('AI 工作台', 'AI Workspace') }}</span>
         </div>
         <button class="icon-btn ghost" @click="go('/')">🏡</button>
       </header>
 
       <header class="topbar">
         <div class="left">
-          <div class="title">AI 工作台 · 智能图片检索</div>
-          <div class="subtitle">与大模型对话，检索你的图片资产 · 你好，{{ username }}。</div>
+          <div class="title">{{ text('AI 工作台 · 智能图片检索', 'AI Workspace · Smart search') }}</div>
+          <div class="subtitle">{{ text(`与AI大模型对话，探索查询图片的新方式`, 'Chat with an AI model to explore new ways to search your photos.') }}</div>
         </div>
         <div class="right">
-          <span class="welcome">欢迎你，亲爱的 Photory 用户 {{ username }}</span>
+          <span class="welcome">{{ text('欢迎你，亲爱的 Photory 用户', 'Welcome, dear Photory user') }} {{ username }}</span>
         </div>
       </header>
 
@@ -173,7 +151,7 @@ const closeNav = () => (navOpen.value = false)
               <div class="icon">📸</div>
               <div class="text">
                 <h1>Photory</h1>
-                <p>智慧对话</p>
+                <p>{{ text('智慧对话', 'Smart chat') }}</p>
               </div>
             </div>
             <button class="icon-btn ghost" @click="closeNav">✕</button>
@@ -199,7 +177,7 @@ const closeNav = () => (navOpen.value = false)
             <div class="hint-left">
               <div class="hint-title">
                 <span class="hint-badge">问法提示</span>
-                <span class="hint-sub">结构化条件 + 关键词 + AI 标签/描述 + AND/OR 组合</span>
+                <span class="hint-sub">支持结构化条件 & 关键词组合查询</span>
               </div>
               <div class="hint-tip">点击示例会填入输入框（不自动发送）；双击示例可直接查询。</div>
             </div>
@@ -228,9 +206,6 @@ const closeNav = () => (navOpen.value = false)
                     >
                       {{ ex }}
                     </button>
-                  </div>
-                  <div class="hint-row">
-                    <button type="button" class="hint-mini" :disabled="!g.examples.length" @click="copyPrompt(g.examples[0]!)">复制本组首条</button>
                   </div>
                 </div>
               </div>

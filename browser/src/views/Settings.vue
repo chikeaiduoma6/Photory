@@ -41,9 +41,8 @@ const isEnglish = computed(() => language.value === 'en')
 const t = computed(() => {
   if (!isEnglish.value) {
     return {
-      title: '设置',
-      subtitle: '管理账号、安全、存储与外观',
-      hello: (name: string) => `管理账号、安全、存储与外观 · 你好，${name}。`,
+      title: '设置 · 个人中心',
+      subtitle: '管理账号与安全，存储与配额，优化外观与体验',
       logout: '退出登录',
       refresh: '刷新',
       refreshing: '刷新中…',
@@ -79,13 +78,16 @@ const t = computed(() => {
       language: '系统语言',
       chinese: '中文',
       english: 'English',
-      langHint: '提示：语言切换已保存偏好，界面多语言将在后续版本完善。',
+      langHint: '界面多语言将在后续版本完善。',
+      pwdMismatch: '两次新密码不一致',
+      pwdEmpty: '请填写当前密码和新密码',
+      pwdWeak: '新密码至少 6 位，且需包含字母和数字',
+      pwdUpdated: '密码已更新',
     }
   }
   return {
-    title: 'Settings',
-    subtitle: 'Account, security, storage and appearance',
-    hello: (name: string) => `Account, security, storage and appearance · Hi, ${name}.`,
+    title: 'Settings · Profile',
+    subtitle: 'Account & security, Storage & quota, Appearance & experience',
     logout: 'Log out',
     refresh: 'Refresh',
     refreshing: 'Refreshing…',
@@ -121,7 +123,11 @@ const t = computed(() => {
     language: 'Language',
     chinese: '中文',
     english: 'English',
-    langHint: 'Note: preference is saved; full i18n will be improved later.',
+    langHint: 'Full UI translation will be improved in later versions.',
+    pwdMismatch: 'Passwords do not match',
+    pwdEmpty: 'Please enter current and new password',
+    pwdWeak: 'New password must be at least 6 characters and include letters + digits',
+    pwdUpdated: 'Password updated',
   }
 })
 
@@ -163,9 +169,16 @@ async function refresh() {
 }
 
 async function changePassword() {
-  if (!currentPassword.value || !newPassword.value) return
+  if (!currentPassword.value || !newPassword.value) {
+    ElMessage.warning(t.value.pwdEmpty)
+    return
+  }
   if (newPassword.value !== confirmPassword.value) {
-    ElMessage.warning('两次新密码不一致')
+    ElMessage.warning(t.value.pwdMismatch)
+    return
+  }
+  if (newPassword.value.length < 6 || !(/[A-Za-z]/.test(newPassword.value) && /\d/.test(newPassword.value))) {
+    ElMessage.warning(t.value.pwdWeak)
     return
   }
   changingPwd.value = true
@@ -174,7 +187,7 @@ async function changePassword() {
       current_password: currentPassword.value,
       new_password: newPassword.value,
     })
-    ElMessage.success('密码已更新')
+    ElMessage.success(t.value.pwdUpdated)
     currentPassword.value = ''
     newPassword.value = ''
     confirmPassword.value = ''
@@ -225,7 +238,7 @@ onMounted(() => {
       <header class="topbar">
         <div class="left">
           <div class="title">{{ t.title }}</div>
-          <div class="subtitle">{{ t.hello(username) }}</div>
+          <div class="subtitle">{{ t.subtitle }}</div>
         </div>
         <div class="right">
           <button class="pill danger" @click="logout">{{ t.logout }}</button>

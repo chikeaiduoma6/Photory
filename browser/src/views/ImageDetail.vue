@@ -247,7 +247,7 @@ onMounted(fetchDetail)
         <div class="icon">📸</div>
         <div class="text">
           <h1>Photory</h1>
-          <p>记录世间每一份美好，让瞬间永恒～</p>
+          <p>记录世间每一份美好，让瞬间变成永恒～</p>
         </div>
       </div>
 
@@ -276,7 +276,7 @@ onMounted(fetchDetail)
       <header class="topbar">
         <div class="left">
           <div class="title">{{ detail.name || detail.original_name }}</div>
-          <div class="subtitle">来自 {{ detail.folder || '默认图库' }} · {{ formatDate(detail.created_at) }}</div>
+          <div class="subtitle">{{ detail.folder && detail.folder !== '默认图库' ? detail.folder + ' · ' : '' }}{{ formatDate(detail.created_at) }}</div>
         </div>
         <div class="right">
           <button class="pill-btn ghost" @click="goBack">返回</button>

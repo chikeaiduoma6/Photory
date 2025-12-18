@@ -19,17 +19,17 @@
         <button class="icon-btn ghost" @click="toggleNav">☰</button>
         <div class="mobile-brand">
           <span class="logo-mini">📸</span>
-          <span>相册</span>
+          <span>{{ text('相册', 'Albums') }}</span>
         </div>
         <button class="icon-btn ghost" @click="go('/')">🏡</button>
       </header>
       <header class="topbar">
         <div class="left">
-          <div class="title">相册 · 珍藏美好回忆</div>
-          <div class="subtitle">可按主题、时间、旅行等创建你的专属相册 · 你好，{{ username }}。</div>
+          <div class="title">{{ text('相册 · 珍藏美好回忆', 'Albums · Keep your memories') }}</div>
+          <div class="subtitle">{{ text('可按不同主题创建你的专属相册~', 'Create albums by themes you love.') }}</div>
         </div>
         <div class="right">
-          <span class="welcome">欢迎你，亲爱的 Photory 用户 {{ username }}</span>
+          <span class="welcome">{{ text('欢迎你，亲爱的 Photory 用户', 'Welcome, dear Photory user') }} {{ username }}</span>
         </div>
       </header>
       <div class="drawer" :class="{ open: navOpen }">
@@ -40,7 +40,7 @@
               <div class="icon">📸</div>
               <div class="text">
                 <h1>Photory</h1>
-                <p>专属相册</p>
+                <p>{{ text('专属相册', 'Your albums') }}</p>
               </div>
             </div>
             <button class="icon-btn ghost" @click="closeNav">✕</button>
@@ -54,7 +54,7 @@
       </div>
       
       <section class="albums-section">
-        <div v-if="loading" class="empty-box">加载中...</div>
+        <div v-if="loading" class="empty-box">{{ text('加载中...', 'Loading...') }}</div>
         <div v-else class="albums-list">
           <!-- 新建相册按钮（相册卡片样式） -->
           <div class="album-card create-album-card" @click="showCreateDialog = true">
@@ -62,10 +62,10 @@
               <span class="create-plus">➕</span>
             </div>
             <div class="album-info">
-              <div class="name">新建相册</div>
-              <div class="desc">创建你的专属相册</div>
+              <div class="name">{{ text('新建相册', 'New album') }}</div>
+              <div class="desc">{{ text('创建你的专属相册', 'Create your own album') }}</div>
               <div class="meta-row">
-                <span>点击创建</span>
+                <span>{{ text('点击创建', 'Click to create') }}</span>
               </div>
             </div>
           </div>
@@ -77,7 +77,7 @@
             </div>
             <div class="album-info" @click="openAlbum(album.id)">
               <div class="name">{{ album.title }}</div>
-              <div class="desc">暂无描述～</div>
+              <div v-if="album.description" class="desc">{{ album.description }}</div>
               <div class="meta-row">
                 <span>共 {{ album.image_count }} 张</span>
                 <span>{{ album.created_at.slice(0,10) }}</span>
@@ -132,6 +132,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
 import { usePreferencesStore } from '@/stores/preferences'
 import { getNavLinks } from '@/utils/navLinks'
+import { useLocale } from '@/composables/useLocale'
 
 interface Image {
   id: number
@@ -146,6 +147,7 @@ interface Album {
   id: number
   title: string
   user_id: number
+  description?: string
   visibility: string
   created_at: string
   updated_at: string
@@ -183,6 +185,7 @@ const coverThumb = (album: Album) => {
 
 const preferencesStore = usePreferencesStore()
 const links = computed(() => getNavLinks(preferencesStore.language))
+const { text } = useLocale()
 
 async function fetchAlbums() {
   loading.value = true

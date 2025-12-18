@@ -621,7 +621,7 @@ def _serialize_version(ver: ImageVersion) -> dict:
     }
 
 
-def _serialize_image(img: Image) -> dict:
+def _serialize_image(img: Image, include_albums: bool = False) -> dict:
     data = img.to_dict()
     data["raw_url"] = f"/api/v1/images/{img.id}/raw"
     data["thumb_url"] = f"/api/v1/images/{img.id}/thumb"
@@ -648,6 +648,13 @@ def _serialize_image(img: Image) -> dict:
     data["ai_status"] = ai.status if ai else None
     data["ai_model"] = ai.model if ai else None
     data["ai_updated_at"] = ai.updated_at.isoformat() if ai else None
+    if include_albums:
+        try:
+            albums = img.albums.order_by(Album.created_at.desc()).all()
+        except Exception:
+            albums = img.albums.all()
+        data["album_ids"] = [a.id for a in albums]
+        data["album_objects"] = [{"id": a.id, "title": a.title, "visibility": a.visibility} for a in albums]
     return data
 
 
@@ -1021,7 +1028,8 @@ def _ai_infer_combine_logic(text: str) -> str:
     """推断组合方式，默认 AND，出现“或/或者/还是”时放宽为 OR"""
     if not text:
         return "and"
-    or_words = r"(或是|或者|或则|还是|或\b)"
+    # 注意：Python 的 \b 在中文场景下常失效（中文也属于 \w），所以需要显式包含单字“或”
+    or_words = r"(或者是|或者|或是|或则|还是|或)"
     and_words = r"(并且|且|同时|以及|又)"
     tag_words = r"(标签|标记|包含|关键词|关键字|描述|说明|caption)"
     struct_words = r"(上传|拍摄|相机|镜头|机型|相册|专辑|文件夹|分辨率|像素|大小|容量)"
@@ -1037,7 +1045,8 @@ def _ai_detect_logic_mode(text: str) -> str:
         return "auto"
     t = text
     # 更偏向“二选一”的用词
-    if re.search(r"(或者是|或者|或是|还是)", t):
+    # 注意：单字“或”也要识别（例如“在风景相册里或包含落叶的图片”）
+    if re.search(r"(或者是|或者|或是|或则|还是|或)", t):
         return "or"
     # 更偏向“同时满足”的用词
     if re.search(r"(并且|而且|同时|以及|又|并且还|并且同时)", t):
@@ -1061,6 +1070,12 @@ def _is_noise_keyword(token: str) -> bool:
         return True
     low = str(token).lower().strip()
     if low in {"and", "or"}:
+        return True
+    # 结构化字段名（避免出现 "album: 风景" 时把 "album" 当普通关键词导致结果被误缩小）
+    if low in {"album"}:
+        return True
+    # 区间/范围等常见后缀词（尤其是文件大小“400KB-1MB之间”会遗留“之间”）
+    if low in {"之间", "区间", "范围", "以内"}:
         return True
     if low in {"并且", "而且", "同时", "以及", "且", "和", "或者", "或是", "或则", "还是", "或"}:
         return True
@@ -1110,6 +1125,7 @@ def _is_noise_keyword(token: str) -> bool:
         r"^(相册|专辑|文件夹|相机|镜头|机型)$",
         r"^(分辨率|像素|大小|容量|文件大小)$",
         r"^(小于|大于|以上|以下|不超过|不少于|至少|最多)$",
+        r"^(之间|区间|范围|以内)$",
         r"^(图片|照片|相片)$",
         r"^(帮我|为我|我要|我想|请|麻烦|帮忙|查找|搜索|检索|找|找出|列出|显示)$",
         r"^(相关|相应)$",
@@ -1319,6 +1335,13 @@ def _heuristic_keywords_from_text(text: str, max_terms: int = 6) -> list[str]:
 
     # 去掉日期/尺寸/分辨率等结构化片段，避免干扰
     t = re.sub(r"\d{4}[-./年]\d{1,2}[-./月]\d{1,2}", " ", t)
+    # 去掉文件大小区间（例如 400KB-1MB），避免把区间当作关键词导致“结果被排空”
+    t = re.sub(
+        r"\d+(?:\.\d+)?\s*(?:k|kb|m|mb|g|gb|兆)\s*(?:-|~|到|至|—|–)\s*\d+(?:\.\d+)?\s*(?:k|kb|m|mb|g|gb|兆)",
+        " ",
+        t,
+        flags=re.IGNORECASE,
+    )
     t = re.sub(r"\d+(?:\.\d+)?\s*(?:k|kb|m|mb|g|gb|兆)\b", " ", t, flags=re.IGNORECASE)
     t = re.sub(r"\d{3,5}\s*[xX×*]\s*\d{3,5}", " ", t)
     t = re.sub(r"\d{3,4}p\b", " ", t, flags=re.IGNORECASE)
@@ -1355,6 +1378,10 @@ def _heuristic_keywords_from_text(text: str, max_terms: int = 6) -> list[str]:
         "相应",
         "包含",
         "主题",
+        "之间",
+        "区间",
+        "范围",
+        "以内",
         "的",
         "图片",
         "照片",
@@ -1389,7 +1416,7 @@ def _split_or_segments(text: str) -> list[str]:
     if not text:
         return []
     t = _normalize_query_text(text)
-    parts = re.split(r"(?:或者是|或者|或是|或则|还是|\bor\b|\|)", t, flags=re.IGNORECASE)
+    parts = re.split(r"(?:或者是|或者|或是|或则|还是|或|\bor\b|\|)", t, flags=re.IGNORECASE)
     cleaned = [p.strip(" ，。;；:：\n\t") for p in parts if (p or "").strip()]
     return cleaned or [t.strip()]
 
@@ -1409,7 +1436,14 @@ def _ai_build_clause_condition(user_id: int, text: str, keywords: list[str]):
         return bool(re.search(r"\d{4}[-./年]\d{1,2}[-./月]\d{1,2}", s))
 
     def _looks_like_size(s: str) -> bool:
-        return bool(re.search(r"\d+(?:\.\d+)?\s*(?:k|kb|m|mb|g|gb|兆)\b", s, flags=re.IGNORECASE))
+        # 不能用 \b 依赖“单词边界”，中文属于 \w，导致 "1MB之间" 无法命中
+        return bool(
+            re.search(
+                r"(\d+(?:\.\d+)?\s*(?:k|kb|m|mb|g|gb|兆)\s*(?:-|~|到|至|—|–)\s*\d+(?:\.\d+)?\s*(?:k|kb|m|mb|g|gb|兆))|(\d+(?:\.\d+)?\s*(?:k|kb|m|mb|g|gb|兆))",
+                s,
+                flags=re.IGNORECASE,
+            )
+        )
 
     def _looks_like_resolution(s: str) -> bool:
         return bool(re.search(r"\d{3,5}\s*[xX×*]\s*\d{3,5}", s)) or bool(
@@ -1501,7 +1535,7 @@ def _ai_build_clause_condition(user_id: int, text: str, keywords: list[str]):
 
 
 
-def _ai_advanced_search(user_id: int, text: str, keywords: list[str], limit: int = 12) -> list[dict]:
+def _ai_advanced_search(user_id: int, text: str, keywords: list[str], limit: int | None = 12) -> list[dict]:
     """结合关键词与简单结构化条件进行搜索。
 
     支持：
@@ -1564,7 +1598,11 @@ def _ai_advanced_search(user_id: int, text: str, keywords: list[str], limit: int
         except Exception:
             current_app.logger.exception("AI_SEARCH_DEBUG failed")
 
-    items = q.order_by(Image.created_at.desc()).limit(limit).all()
+    q = q.order_by(Image.created_at.desc())
+    if limit is None or int(limit) <= 0:
+        items = q.all()
+    else:
+        items = q.limit(int(limit)).all()
     return [
         {
             "id": it.id,
@@ -1635,6 +1673,67 @@ def _remove_files(img: Image):
                 os.remove(thumb_path)
     except Exception:
         pass
+    try:
+        # also remove exported/backup versions on disk
+        versions = img.versions.all() if hasattr(img.versions, "all") else (img.versions or [])
+        for ver in versions:
+            try:
+                rel = _normalize_rel_path(getattr(ver, "filename", None))
+                if rel:
+                    disk_path = os.path.join(current_app.config["UPLOAD_DIR"], rel)
+                    if os.path.exists(disk_path):
+                        os.remove(disk_path)
+            except Exception:
+                pass
+            try:
+                rel = _normalize_rel_path(getattr(ver, "thumb_path", None))
+                if rel:
+                    thumb_path = os.path.join(current_app.config["THUMB_DIR"], rel)
+                    if os.path.exists(thumb_path):
+                        os.remove(thumb_path)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def purge_expired_recycle(retention_days: int | None = None, batch_size: int = 200, user_id: int | None = None) -> int:
+    """
+    Permanently remove images that have stayed in recycle bin longer than retention_days.
+
+    This deletes both DB rows and files on disk (including version history files).
+    """
+    days = retention_days if retention_days is not None else int(current_app.config.get("RECYCLE_RETENTION_DAYS", 7))
+    if days <= 0:
+        return 0
+    cutoff = datetime.utcnow() - timedelta(days=days)
+
+    total = 0
+    while True:
+        q = Image.query.filter(Image.deleted_at.isnot(None), Image.deleted_at <= cutoff)
+        if user_id is not None:
+            q = q.filter(Image.user_id == int(user_id))
+        expired = q.order_by(Image.deleted_at.asc()).limit(batch_size).all()
+        if not expired:
+            break
+
+        for img in expired:
+            _remove_files(img)
+            db.session.delete(img)
+
+        try:
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+            raise
+
+        total += len(expired)
+        if len(expired) < batch_size:
+            break
+
+    if total:
+        current_app.logger.info("purged expired recycle images: %s", total)
+    return total
 
 
 def _center_box_by_ratio(ratio: float) -> dict:
@@ -1652,6 +1751,7 @@ def _center_box_by_ratio(ratio: float) -> dict:
 def _apply_edits(pil: PILImage.Image, payload: dict) -> PILImage.Image:
     rotation = payload.get("rotation", 0) or 0
     zoom = payload.get("zoom", 1) or 1
+    pan = payload.get("pan") or {}
     crop = payload.get("crop") or {}
     crop_box = payload.get("crop_box") or {}
     adjustments = payload.get("adjustments") or {}
@@ -1661,53 +1761,113 @@ def _apply_edits(pil: PILImage.Image, payload: dict) -> PILImage.Image:
     if rotation:
         img = img.rotate(-rotation, expand=True)
 
-    if zoom and zoom != 1:
-        w, h = img.size
-        target_w = int(w / max(zoom, 0.001))
-        target_h = int(h / max(zoom, 0.001))
-        left = max(0, (w - target_w) // 2)
-        top = max(0, (h - target_h) // 2)
-        img = img.crop((left, top, left + target_w, top + target_h))
-
+    # 统一的裁剪/缩放逻辑：
+    # - base_box: 由自由框选(crop_box)或比例预设(crop.preset)确定输出裁剪框（输出尺寸=base_box）
+    # - 再基于 zoom+pan 在 base_box 内取更小区域，并缩放回输出尺寸（保证“缩放不改变导出尺寸”）
     preset = crop.get("preset") or crop.get("cropPreset") or "free"
-    if preset == "free" and crop_box and crop_box.get("w") and crop_box.get("h"):
-        w, h = img.size
-        left = max(0, min(w, int(crop_box.get("x", 0) * w)))
-        top = max(0, min(h, int(crop_box.get("y", 0) * h)))
-        cw = max(1, int(crop_box.get("w", 1) * w))
-        ch = max(1, int(crop_box.get("h", 1) * h))
-        right = min(w, left + cw)
-        bottom = min(h, top + ch)
-        img = img.crop((left, top, right, bottom))
-    else:
-        aspect_w = crop.get("width") or crop.get("w")
-        aspect_h = crop.get("height") or crop.get("h")
-        ratio = None
-        if preset and preset != "free" and preset != "auto":
-            if preset == "custom" and aspect_w and aspect_h:
+    aspect_w = crop.get("width") or crop.get("w")
+    aspect_h = crop.get("height") or crop.get("h")
+    ratio = None
+    if preset and preset not in ("free", "auto"):
+        if preset == "custom" and aspect_w and aspect_h:
+            try:
                 ratio = float(aspect_w) / float(aspect_h)
-            elif ":" in preset:
-                try:
-                    a, b = preset.split(":")
-                    ratio = float(a) / float(b)
-                except Exception:
-                    ratio = None
-            elif "/" in preset:
-                try:
-                    a, b = preset.split("/")
-                    ratio = float(a) / float(b)
-                except Exception:
-                    ratio = None
-        if ratio and ratio > 0:
-            w, h = img.size
-            target_w = w
-            target_h = int(w / ratio)
-            if target_h > h:
-                target_h = h
-                target_w = int(h * ratio)
-            left = max(0, (w - target_w) // 2)
-            top = max(0, (h - target_h) // 2)
-            img = img.crop((left, top, left + target_w, top + target_h))
+            except Exception:
+                ratio = None
+        elif ":" in str(preset):
+            try:
+                a, b = str(preset).split(":")
+                ratio = float(a) / float(b)
+            except Exception:
+                ratio = None
+        elif "/" in str(preset):
+            try:
+                a, b = str(preset).split("/")
+                ratio = float(a) / float(b)
+            except Exception:
+                ratio = None
+    if ratio is not None and ratio <= 0:
+        ratio = None
+
+    try:
+        zoom_f = float(zoom or 1)
+    except Exception:
+        zoom_f = 1.0
+    if zoom_f < 1:
+        zoom_f = 1.0
+
+    try:
+        pan_x = float((pan or {}).get("x", 0) or 0)
+        pan_y = float((pan or {}).get("y", 0) or 0)
+    except Exception:
+        pan_x = 0.0
+        pan_y = 0.0
+    pan_x = max(-1.0, min(1.0, pan_x))
+    pan_y = max(-1.0, min(1.0, pan_y))
+
+    w0, h0 = img.size
+
+    def _parse_norm_box(box: dict) -> tuple[float, float, float, float] | None:
+        try:
+            x = float(box.get("x", 0) or 0)
+            y = float(box.get("y", 0) or 0)
+            bw = float(box.get("w", 0) or 0)
+            bh = float(box.get("h", 0) or 0)
+        except Exception:
+            return None
+        if bw <= 0 or bh <= 0:
+            return None
+        x = max(0.0, min(1.0, x))
+        y = max(0.0, min(1.0, y))
+        bw = max(0.0, min(1.0, bw))
+        bh = max(0.0, min(1.0, bh))
+        if x + bw > 1.0:
+            bw = 1.0 - x
+        if y + bh > 1.0:
+            bh = 1.0 - y
+        if bw <= 0 or bh <= 0:
+            return None
+        return (x, y, bw, bh)
+
+    base_norm = _parse_norm_box(crop_box) if isinstance(crop_box, dict) else None
+    if base_norm is None and ratio:
+        if w0 / max(h0, 1) >= ratio:
+            base_h = h0
+            base_w = int(round(base_h * ratio))
+        else:
+            base_w = w0
+            base_h = int(round(base_w / ratio))
+        base_w = max(1, min(w0, base_w))
+        base_h = max(1, min(h0, base_h))
+        base_left = int(round((w0 - base_w) / 2.0))
+        base_top = int(round((h0 - base_h) / 2.0))
+    elif base_norm is None:
+        base_left, base_top, base_w, base_h = 0, 0, w0, h0
+    else:
+        x, y, bw, bh = base_norm
+        base_left = int(round(x * w0))
+        base_top = int(round(y * h0))
+        base_w = max(1, int(round(bw * w0)))
+        base_h = max(1, int(round(bh * h0)))
+        base_left = max(0, min(w0 - base_w, base_left))
+        base_top = max(0, min(h0 - base_h, base_top))
+
+    out_w, out_h = base_w, base_h
+    crop_w = max(1, min(base_w, int(round(base_w / zoom_f))))
+    crop_h = max(1, min(base_h, int(round(base_h / zoom_f))))
+    slack_x = max(0.0, (base_w - crop_w) / 2.0)
+    slack_y = max(0.0, (base_h - crop_h) / 2.0)
+    left = int(round(base_left + slack_x + pan_x * slack_x))
+    top = int(round(base_top + slack_y + pan_y * slack_y))
+    left = max(0, min(w0 - crop_w, left))
+    top = max(0, min(h0 - crop_h, top))
+    img = img.crop((left, top, left + crop_w, top + crop_h))
+    if (crop_w, crop_h) != (out_w, out_h):
+        try:
+            resample = PILImage.Resampling.LANCZOS
+        except Exception:
+            resample = PILImage.LANCZOS
+        img = img.resize((out_w, out_h), resample=resample)
 
     bright = float(adjustments.get("brightness") or 0)
     exposure = float(adjustments.get("exposure") or 0)
@@ -1952,8 +2112,8 @@ def search_images():
                 )
             )
 
-        camera_param = (request.args.get("camera") or "").strip()
-        lens_param = (request.args.get("lens") or "").strip()
+        camera_param = _list_param("camera")
+        lens_param = _list_param("lens")
         inferred_camera = _ai_parse_camera_keyword(keyword)
         if inferred_camera and not (camera_param or lens_param):
             exclude_terms.add(inferred_camera)
@@ -2026,12 +2186,47 @@ def search_images():
         )
 
     if format_list:
+        format_aliases = {
+            "jpg": ["jpg", "jpeg"],
+            "jpeg": ["jpeg", "jpg"],
+            "heic": ["heic", "heif"],
+            "heif": ["heif", "heic"],
+            "raw": [
+                "raw",
+                "dng",
+                "nef",
+                "cr2",
+                "cr3",
+                "arw",
+                "raf",
+                "rw2",
+                "orf",
+                "srw",
+                "pef",
+            ],
+        }
+        mime_aliases = {
+            "jpg": ["jpeg", "jpg"],
+            "jpeg": ["jpeg", "jpg"],
+            "heic": ["heic", "heif"],
+            "heif": ["heif", "heic"],
+            "raw": ["dng", "raw", "x-adobe-dng", "x-canon", "x-nikon", "x-sony", "x-fuji", "x-panasonic", "x-olympus"],
+        }
+
         conds = []
         for fmt in format_list:
-            conds.append(func.lower(Image.filename).like(f"%.{fmt}"))
-            conds.append(func.lower(Image.original_name).like(f"%.{fmt}"))
-            conds.append(func.lower(Image.mime_type).like(f"%{fmt}%"))
-        query = query.filter(or_(*conds))
+            fmt = (fmt or "").strip().lstrip(".").lower()
+            if not fmt:
+                continue
+            exts = format_aliases.get(fmt, [fmt])
+            mimes = mime_aliases.get(fmt, [fmt])
+            for ext in exts:
+                conds.append(func.lower(Image.filename).like(f"%.{ext}"))
+                conds.append(func.lower(Image.original_name).like(f"%.{ext}"))
+            for mt in mimes:
+                conds.append(func.lower(Image.mime_type).like(f"%{mt}%"))
+        if conds:
+            query = query.filter(or_(*conds))
 
     if featured_flag is not None:
         want_featured = str(featured_flag).lower() in ("1", "true", "yes", "on")
@@ -2060,9 +2255,12 @@ def search_images():
         query = query.filter(Image.size <= max_mb * 1024 * 1024)
 
     for key, col in exif_map.items():
-        val = (request.args.get(key) or "").strip()
-        if val:
-            query = query.filter(col.ilike(f"%{val}%"))
+        vals = _list_param(key)
+        if not vals:
+            continue
+        like_conds = [col.ilike(f"%{v.strip()}%") for v in vals if (v or "").strip()]
+        if like_conds:
+            query = query.filter(or_(*like_conds))
 
     tag_count_subq = (
         db.session.query(image_tags.c.image_id, func.count(image_tags.c.tag_id).label("tag_count"))
@@ -2080,6 +2278,7 @@ def search_images():
         "res_desc": res_expr.desc(),
         "res_asc": res_expr.asc(),
         "name_asc": Image.name.asc(),
+        "name_desc": Image.name.desc(),
     }
 
     if sort == "tag_desc":
@@ -2104,6 +2303,39 @@ def search_images():
             "page_size": page_size,
         }
     )
+
+
+@images_bp.get("/exif-options")
+def exif_options():
+    user_id = _current_user_id()
+    field = (request.args.get("field") or "").strip()
+    keyword = (request.args.get("keyword") or "").strip()
+    limit = _positive_int(request.args.get("limit"), 20, 100)
+
+    field_map = {
+        "camera": Image.camera,
+        "lens": Image.lens,
+        "iso": Image.iso,
+        "aperture": Image.aperture,
+        "focal_length": Image.focal,
+        "shutter": Image.exposure,
+    }
+    col = field_map.get(field)
+    if col is None:
+        return jsonify({"message": "invalid field"}), 400
+
+    q = (
+        db.session.query(col)
+        .filter(Image.user_id == user_id)
+        .filter(Image.deleted_at.is_(None))
+        .filter(col.isnot(None))
+        .filter(func.length(func.trim(col)) > 0)
+    )
+    if keyword:
+        q = q.filter(col.ilike(f"%{keyword}%"))
+    rows = q.distinct().order_by(col.asc()).limit(limit).all()
+    items = [r[0] for r in rows if r and r[0]]
+    return jsonify({"items": items})
 
 
 @images_bp.get("/stats")
@@ -2153,6 +2385,8 @@ def image_quota():
 @images_bp.get("/recycle")
 def list_recycle():
     user_id = _current_user_id()
+    # Ensure expired items are removed even if the background task is not running.
+    purge_expired_recycle(user_id=user_id)
     page = _positive_int(request.args.get("page"), 1)
     page_size = _positive_int(request.args.get("page_size"), 12, 50)
     query = _query_user_images(user_id, include_deleted=True).filter(Image.deleted_at.isnot(None))
@@ -2236,7 +2470,7 @@ def recycle_clear():
 def image_detail(image_id: int):
     user_id = _current_user_id()
     img = _get_user_image(image_id, user_id, include_deleted=True)
-    return jsonify(_serialize_image(img))
+    return jsonify(_serialize_image(img, include_albums=True))
 
 
 @images_bp.post("/<int:image_id>/export")
@@ -2260,6 +2494,51 @@ def export_image(image_id: int):
     old_thumb_rel = _normalize_rel_path(img.thumb_path)
 
     _ensure_user_dirs(user_id)
+
+    album_ids = None
+    if isinstance(payload, dict):
+        if "album_ids" in payload:
+            album_ids = payload.get("album_ids")
+        elif "albumIds" in payload:
+            album_ids = payload.get("albumIds")
+
+    def _coerce_id_list(raw) -> list[int] | None:
+        if raw is None:
+            return None
+        if isinstance(raw, str):
+            parts = [p.strip() for p in raw.split(",") if p.strip()]
+        elif isinstance(raw, (list, tuple, set)):
+            parts = list(raw)
+        else:
+            parts = [raw]
+        ids: list[int] = []
+        seen: set[int] = set()
+        for p in parts:
+            try:
+                i = int(p)
+            except Exception:
+                continue
+            if i in seen:
+                continue
+            seen.add(i)
+            ids.append(i)
+        return ids
+
+    album_ids_coerced = _coerce_id_list(album_ids)
+
+    def _apply_albums(image_obj: Image):
+        if album_ids_coerced is None:
+            return
+        # 替换为当前选择的相册集合（空列表表示清空）
+        if getattr(image_obj, "id", None):
+            existing = image_obj.albums.all()
+            for a in existing:
+                image_obj.albums.remove(a)
+        if not album_ids_coerced:
+            return
+        albums = Album.query.filter(Album.user_id == user_id, Album.id.in_(album_ids_coerced)).all()
+        for a in albums:
+            image_obj.albums.append(a)
 
     try:
         with PILImage.open(disk_path) as src:
@@ -2343,6 +2622,7 @@ def export_image(image_id: int):
             img.thumb_path = thumb_rel
             if tag_names is not None:
                 img.tags = _get_or_create_tags(tag_names, user_id=user_id, color_map=color_map)
+            _apply_albums(img)
             db.session.commit()
 
             if old_thumb_rel and old_thumb_rel != thumb_rel:
@@ -2353,7 +2633,7 @@ def export_image(image_id: int):
                     except Exception:
                         pass
 
-            return jsonify({"message": "ok", "item": _serialize_image(img)})
+            return jsonify({"message": "ok", "item": _serialize_image(img, include_albums=True)})
 
         token = uuid.uuid4().hex
         rel_new = _normalize_rel_path(os.path.join(f"user_{user_id}", f"{token}.{ext}"))
@@ -2393,8 +2673,9 @@ def export_image(image_id: int):
         )
         new_img.tags = _get_or_create_tags(tag_names, user_id=user_id, color_map=color_map)
         db.session.add(new_img)
+        _apply_albums(new_img)
         db.session.commit()
-        return jsonify({"message": "ok", "item": _serialize_image(new_img)})
+        return jsonify({"message": "ok", "item": _serialize_image(new_img, include_albums=True)})
     except Exception as exc:
         db.session.rollback()
         current_app.logger.exception("export failed")
@@ -2596,8 +2877,14 @@ def ai_chat_search():
     if not keywords:
         keywords = [user_text.strip()][:3]
 
+    # 默认返回全部匹配结果（前端会完整展示）；如需限制可传 limit（<=0 表示不限制）
+    req_limit = data.get("limit")
     try:
-        results = _ai_advanced_search(user_id, user_text, keywords, limit=8)
+        limit = int(req_limit) if req_limit is not None and str(req_limit).strip() != "" else None
+    except Exception:
+        limit = None
+    try:
+        results = _ai_advanced_search(user_id, user_text, keywords, limit=limit)
     except Exception as exc:
         current_app.logger.exception("ai search failed")
         return jsonify({"message": "AI 检索失败", "error": str(exc)}), 500
@@ -2635,4 +2922,4 @@ def ai_chat_search():
         top = results[: min(5, len(results))]
         reply = "我找到了这些图片：" + "，".join([f"{it.get('id')} {it.get('name')}" for it in top if it.get("id")])
 
-    return jsonify({"message": "ok", "reply": reply, "keywords": keywords, "images": results})
+    return jsonify({"message": "ok", "reply": reply, "keywords": keywords, "total": len(results), "images": results})

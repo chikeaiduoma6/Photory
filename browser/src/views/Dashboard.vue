@@ -6,6 +6,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
 import { usePreferencesStore } from '@/stores/preferences'
 import { getNavLinks } from '@/utils/navLinks'
+import { useLocale } from '@/composables/useLocale'
 
 interface GalleryImage {
   id: number
@@ -44,6 +45,7 @@ const galleryClass = computed(() => ['gallery', hasImages.value ? viewMode.value
 
 const preferencesStore = usePreferencesStore()
 const links = computed(() => getNavLinks(preferencesStore.language))
+const { text } = useLocale()
 
 const currentPath = computed(() => router.currentRoute.value.path)
 function go(path: string) {
@@ -279,15 +281,15 @@ onUnmounted(stopSlider)
 
       <header class="topbar">
         <div class="left">
-          <div class="title">今天也要好好记录生活哦～</div>
-          <div class="subtitle">Photory 记录你的每一张 photo 下的温柔 story</div>
+          <div class="title">{{ text('今天也要好好记录生活哦～', 'Capture your day, beautifully.') }}</div>
+          <div class="subtitle">{{ text('Photory 记录你的每一张 photo 下的温柔 story', 'Photory keeps every gentle story behind your photos.') }}</div>
         </div>
 
         <div class="right">
-          <span class="welcome">欢迎你，亲爱的 Photory 用户 {{ username }}</span>
+          <span class="welcome">{{ text('欢迎你，亲爱的 Photory 用户', 'Welcome, dear Photory user') }} {{ username }}</span>
           <button class="logout-btn" @click="logout">
             <span class="icon">🚪</span>
-            <span class="text">退出</span>
+            <span class="text">{{ text('退出', 'Log out') }}</span>
           </button>
         </div>
       </header>
@@ -301,7 +303,7 @@ onUnmounted(stopSlider)
               <div class="icon">📸</div>
               <div class="text">
                 <h1>Photory</h1>
-                <p>记录美好 · 随时随地</p>
+                <p>{{ text('记录美好 · 随时随地', 'Capture moments · Anytime, anywhere') }}</p>
               </div>
             </div>
             <button class="icon-btn ghost" @click="closeNav">×</button>

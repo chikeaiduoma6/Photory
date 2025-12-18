@@ -6,6 +6,7 @@ import axios from 'axios'
 import { useAuthStore } from '@/stores/auth'
 import { usePreferencesStore } from '@/stores/preferences'
 import { getNavLinks } from '@/utils/navLinks'
+import { useLocale } from '@/composables/useLocale'
 
 interface RecycleItem {
   id: number
@@ -22,6 +23,7 @@ const username = computed(() => authStore.user?.username || '访客')
 
 const preferencesStore = usePreferencesStore()
 const links = computed(() => getNavLinks(preferencesStore.language))
+const { text } = useLocale()
 
 const currentPath = computed(() => router.currentRoute.value.path)
 function go(path: string) { router.push(path); navOpen.value = false }
@@ -151,18 +153,18 @@ onMounted(() => { if (authStore.token) fetchRecycle() })
         <button class="icon-btn ghost" @click="toggleNav">☰</button>
         <div class="mobile-brand">
           <span class="logo-mini">🗑️</span>
-          <span>回收站</span>
+          <span>{{ text('回收站', 'Recycle Bin') }}</span>
         </div>
         <button class="icon-btn ghost" @click="go('/')">🏡</button>
       </header>
 
       <header class="topbar">
         <div class="left">
-          <div class="title">回收站</div>
-          <div class="subtitle">被暂时删除的图片都存储在这里哦！</div>
+          <div class="title">{{ text('回收站', 'Recycle Bin') }}</div>
+          <div class="subtitle">{{ text('被暂时删除的图片都存储在这里哦！', 'Temporarily deleted photos are stored here.') }}</div>
         </div>
         <div class="right">
-          <span class="welcome">欢迎你，亲爱的 Photory 用户 {{ username }}</span>
+          <span class="welcome">{{ text('欢迎你，亲爱的 Photory 用户', 'Welcome, dear Photory user') }} {{ username }}</span>
         </div>
       </header>
 
@@ -173,8 +175,8 @@ onMounted(() => { if (authStore.token) fetchRecycle() })
             <div class="brand">
               <div class="icon">📸</div>
               <div class="text">
-                <h1>回收站</h1>
-                <p>7 天后自动清空</p>
+                <h1>{{ text('回收站', 'Recycle Bin') }}</h1>
+                <p>{{ text('7 天后自动清空', 'Auto purge in 7 days') }}</p>
               </div>
             </div>
             <button class="icon-btn ghost" @click="closeNav">✕</button>
@@ -189,11 +191,11 @@ onMounted(() => { if (authStore.token) fetchRecycle() })
 
       <section class="info-row">
         <div class="notice">
-          🗑️ 回收站中的项目将于 7 天后永久删除 · 请及时处理重要的图片
+          {{ text('回收站中的项目将于 7 天后永久删除 · 请及时处理重要的图片', 'Items here will be permanently deleted after 7 days · Please handle important photos in time.') }}
         </div>
         <div class="stat-card">
           <div class="stat-num">{{ total }}</div>
-          <div class="stat-text">回收站图片总数</div>
+          <div class="stat-text">{{ text('回收站图片总数', 'Total in recycle bin') }}</div>
         </div>
       </section>
 
@@ -201,13 +203,13 @@ onMounted(() => { if (authStore.token) fetchRecycle() })
         <div class="left">
           <label class="checkbox">
             <input type="checkbox" :checked="allSelected" @change="toggleAll" />
-            <span>全选</span>
+            <span>{{ text('全选', 'Select all') }}</span>
           </label>
         </div>
         <div class="right">
-          <button class="pill-btn ghost" @click="restore(selected)" :disabled="!selected.length">还原所选</button>
-          <button class="pill-btn danger" @click="purge(selected)" :disabled="!selected.length">永久删除所选</button>
-          <button class="pill-btn danger strong" @click="clearAll" :disabled="!items.length">清空回收站</button>
+          <button class="pill-btn ghost" @click="restore(selected)" :disabled="!selected.length">{{ text('还原所选', 'Restore selected') }}</button>
+          <button class="pill-btn danger" @click="purge(selected)" :disabled="!selected.length">{{ text('永久删除所选', 'Delete selected') }}</button>
+          <button class="pill-btn danger strong" @click="clearAll" :disabled="!items.length">{{ text('清空回收站', 'Empty recycle bin') }}</button>
         </div>
       </section>
 

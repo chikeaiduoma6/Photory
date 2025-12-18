@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
 import { usePreferencesStore } from '@/stores/preferences'
 import { getNavLinks } from '@/utils/navLinks'
+import { useLocale } from '@/composables/useLocale'
 
 type UploadStatus = 'waiting' | 'uploading' | 'paused' | 'stopped' | 'success' | 'error'
 interface UploadItem {
@@ -16,6 +17,7 @@ interface UploadItem {
   progress: number
   errorMessage?: string
   raw?: File
+  previewUrl?: string
   controller?: AbortController
   addedAt: number
   imageId?: number
@@ -36,6 +38,7 @@ const username = computed(() => authStore.user?.username || '未登录')
 
 const preferencesStore = usePreferencesStore()
 const links = computed(() => getNavLinks(preferencesStore.language))
+const { text } = useLocale()
 
 const navOpen = ref(false)
 const currentPath = computed(() => router.currentRoute.value.path)
@@ -57,7 +60,6 @@ watch(
   () => closeNav()
 )
 
-const selectedFiles = ref<File[]>([])
 const albumOptions = ref<AlbumOption[]>([])
 const selectedAlbumId = ref<number | ''>('')
 const loadingAlbums = ref(false)
@@ -68,31 +70,99 @@ const newTagName = ref('')
 const newTagColor = ref('#ff8bb3')
 const customName = ref('')
 const description = ref('')
-const openDetailAfter = ref(false)
+const openDetailAfter = ref(true)
 const autoAnalyze = ref(true)
 
 const uploadItems = ref<UploadItem[]>([])
 const fileInputRef = ref<HTMLInputElement | null>(null)
-const displayItems = computed(() => uploadItems.value.filter(i => Date.now() - i.addedAt < 3600 * 1000))
+const folderInputRef = ref<HTMLInputElement | null>(null)
+const displayItems = computed(() => uploadItems.value)
+
+type SupportedExt = 'jpg' | 'jpeg' | 'png' | 'gif' | 'webp' | 'bmp' | 'heic' | 'heif'
+const supportedExts: SupportedExt[] = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'heic', 'heif']
+const supportedExtLabel = 'JPG / JPEG / PNG / GIF / WebP / BMP / HEIC / HEIF'
+
+function isSupportedImage(file: File) {
+  const name = (file.name || '').toLowerCase()
+  const ext = name.includes('.') ? name.split('.').pop() || '' : ''
+  return !!ext && supportedExts.includes(ext as SupportedExt)
+}
+
+function enqueueFiles(files: File[]) {
+  const good: File[] = []
+  let rejected = 0
+  for (const f of files) {
+    if (isSupportedImage(f) || (f.type || '').startsWith('image/')) good.push(f)
+    else rejected += 1
+  }
+  if (rejected) ElMessage.warning(text(`已跳过 ${rejected} 个非支持格式文件`, `Skipped ${rejected} unsupported file(s)`))
+  const now = Date.now()
+  for (const file of good) {
+    uploadItems.value.push({
+      id: now + Math.random(),
+      name: file.name,
+      size: file.size,
+      status: 'waiting',
+      progress: 0,
+      raw: file,
+      previewUrl: typeof URL !== 'undefined' ? URL.createObjectURL(file) : undefined,
+      addedAt: Date.now(),
+    })
+  }
+}
+
+const queueStats = computed(() => {
+  const items = displayItems.value
+  const totalCount = items.length
+  const totalBytes = items.reduce((sum, it) => sum + (it.size || 0), 0)
+  const pendingItems = items.filter(it => it.status !== 'success')
+  const pendingCount = pendingItems.length
+  const pendingBytes = pendingItems.reduce((sum, it) => sum + (it.size || 0), 0)
+  return { totalCount, totalBytes, pendingCount, pendingBytes }
+})
+
+const queueStatsText = computed(() => {
+  const { totalCount, totalBytes, pendingCount, pendingBytes } = queueStats.value
+  if (!totalCount) return ''
+  const zh =
+    pendingCount === 0
+      ? `本次上传 ${totalCount} 张，合计 ${formatSize(totalBytes)}（已全部上传）`
+      : `本次上传 ${totalCount} 张，合计 ${formatSize(totalBytes)}（待上传 ${pendingCount} 张，${formatSize(pendingBytes)}）`
+  const en =
+    pendingCount === 0
+      ? `This upload: ${totalCount} file(s), ${formatSize(totalBytes)} (all done)`
+      : `This upload: ${totalCount} file(s), ${formatSize(totalBytes)} (pending ${pendingCount}, ${formatSize(pendingBytes)})`
+  return text(zh, en)
+})
 
 function onSelectFiles(event: Event) {
   const input = event.target as HTMLInputElement
   const files = input.files
   if (!files) return
-  selectedFiles.value = [...selectedFiles.value, ...Array.from(files)]
+  enqueueFiles(Array.from(files))
+  input.value = ''
+}
+function onSelectFolder(event: Event) {
+  const input = event.target as HTMLInputElement
+  const files = input.files
+  if (!files) return
+  enqueueFiles(Array.from(files))
   input.value = ''
 }
 function onDrop(event: DragEvent) {
   event.preventDefault()
   const files = event.dataTransfer?.files
   if (!files) return
-  selectedFiles.value = [...selectedFiles.value, ...Array.from(files)]
+  enqueueFiles(Array.from(files))
 }
 function onDragOver(event: DragEvent) {
   event.preventDefault()
 }
 function triggerSelectFiles() {
   fileInputRef.value?.click()
+}
+function triggerSelectFolder() {
+  folderInputRef.value?.click()
 }
 
 function formatSize(size: number) {
@@ -157,6 +227,7 @@ async function uploadOne(item: UploadItem) {
   if (!item.raw) {
     item.status = 'error'
     item.errorMessage = '文件缺失'
+    maybeAutoNavigateAfterBatch()
     return
   }
   const form = new FormData()
@@ -186,43 +257,66 @@ async function uploadOne(item: UploadItem) {
         item.progress = pct
       },
     })
-    const uploaded = res.data.items?.[0]
+    const uploaded = res.data?.items?.[0] ?? res.data?.item ?? res.data?.image ?? res.data
+    const uploadedId = uploaded?.id ?? uploaded?.image_id ?? uploaded?.imageId
     item.progress = 100
     item.status = 'success'
-    item.imageId = uploaded?.id
-    if (openDetailAfter.value && item.imageId) {
-      router.push(`/images/${item.imageId}`)
-    }
-    ElMessage.success('上传成功')
+    const normalizedId = typeof uploadedId === 'string' ? Number(uploadedId) : uploadedId
+    item.imageId = Number.isFinite(normalizedId) ? normalizedId : undefined
+    ElMessage.success(text('上传成功', 'Uploaded'))
   } catch (err: any) {
     if (controller.signal.aborted && (item.status === 'paused' || item.status === 'stopped')) return
     item.status = 'error'
     item.errorMessage = err?.response?.data?.message || '上传失败'
+  } finally {
+    maybeAutoNavigateAfterBatch()
   }
 }
 
+const autoOpenBatchIds = ref<number[]>([])
+const autoOpenDone = ref(false)
+function isTerminalStatus(status: UploadStatus) {
+  return status === 'success' || status === 'error' || status === 'stopped'
+}
+function maybeAutoNavigateAfterBatch() {
+  if (!openDetailAfter.value) return
+  if (autoOpenDone.value) return
+  if (!autoOpenBatchIds.value.length) return
+  const idSet = new Set(autoOpenBatchIds.value)
+  const batchItems = uploadItems.value.filter(i => idSet.has(i.id))
+  if (!batchItems.length) return
+  if (!batchItems.every(i => isTerminalStatus(i.status))) return
+  const lastSuccess = [...autoOpenBatchIds.value].reverse().map(id => uploadItems.value.find(i => i.id === id)).find(i => i?.status === 'success' && i.imageId)
+  if (lastSuccess?.imageId) {
+    autoOpenDone.value = true
+    autoOpenBatchIds.value = []
+    router.push(`/images/${lastSuccess.imageId}`).catch(() => {})
+  } else {
+    autoOpenDone.value = true
+    autoOpenBatchIds.value = []
+  }
+}
+
+const batchStatusKey = computed(() => {
+  if (!autoOpenBatchIds.value.length) return ''
+  return autoOpenBatchIds.value
+    .map(id => {
+      const item = uploadItems.value.find(i => i.id === id)
+      return item ? `${id}:${item.status}:${item.imageId ?? ''}` : `${id}:missing`
+    })
+    .join('|')
+})
+watch(batchStatusKey, () => maybeAutoNavigateAfterBatch())
+
 function startUpload() {
-  if (!selectedFiles.value.length) {
-    ElMessage.warning('请选择文件')
+  const startable = uploadItems.value.filter(item => ['waiting', 'paused', 'error', 'stopped'].includes(item.status))
+  if (!startable.length) {
+    ElMessage.warning(text('上传队列为空', 'Upload queue is empty'))
     return
   }
-  selectedFiles.value.forEach(file => {
-    uploadItems.value.push({
-      id: Date.now() + Math.random(),
-      name: file.name,
-      size: file.size,
-      status: 'waiting',
-      progress: 0,
-      raw: file,
-      addedAt: Date.now(),
-    })
-  })
-  selectedFiles.value = []
-  uploadItems.value.forEach(item => {
-    if (['waiting', 'paused', 'error', 'stopped'].includes(item.status)) {
-      uploadOne(item)
-    }
-  })
+  autoOpenDone.value = false
+  autoOpenBatchIds.value = startable.map(i => i.id)
+  startable.forEach(item => uploadOne(item))
 }
 
 function pauseItem(item: UploadItem) {
@@ -232,6 +326,7 @@ function pauseItem(item: UploadItem) {
 }
 function resumeItem(item: UploadItem) {
   if (item.status !== 'paused') return
+  item.progress = 0
   uploadOne(item)
 }
 function stopItem(item: UploadItem) {
@@ -240,8 +335,21 @@ function stopItem(item: UploadItem) {
   item.progress = 0
 }
 function removeItem(id: number) {
+  const found = uploadItems.value.find(i => i.id === id)
+  if (found?.controller) found.controller.abort()
+  if (found?.previewUrl) {
+    try { URL.revokeObjectURL(found.previewUrl) } catch { /* ignore */ }
+  }
   uploadItems.value = uploadItems.value.filter(i => i.id !== id)
 }
+
+onUnmounted(() => {
+  for (const item of uploadItems.value) {
+    if (item.previewUrl) {
+      try { URL.revokeObjectURL(item.previewUrl) } catch { /* ignore */ }
+    }
+  }
+})
 
 function logout() {
   authStore.logout()
@@ -287,18 +395,25 @@ watch(
         <button class="icon-btn ghost" @click="toggleNav">☰</button>
         <div class="mobile-brand">
           <span class="logo-mini">📸</span>
-          <span>上传中心</span>
+          <span>{{ text('上传中心', 'Upload') }}</span>
         </div>
         <button class="icon-btn ghost" @click="go('/')">🏡</button>
       </header>
 
       <header class="topbar">
         <div class="left">
-          <div class="title">上传中心 · 快来丰富你的专属图库吧！</div>
-          <div class="subtitle">支持多种图片格式，移动端可直接拍照或选相册上传</div>
+          <div class="title">{{ text('上传中心 · 快来丰富你的专属图库吧！', 'Upload · Grow your personal gallery!') }}</div>
+          <div class="subtitle">
+            {{
+              text(
+                '支持丰富的图片格式，网页端支持拖拽或打开本地文件夹选择，移动端可直接拍照或打开相册选择',
+                'Supports many formats. On web you can drag & drop or pick a local folder; on mobile you can capture or choose from albums.'
+              )
+            }}
+          </div>
         </div>
         <div class="right">
-          <span class="welcome">欢迎你，亲爱的 Photory 用户 {{ username }}</span>
+          <span class="welcome">{{ text('欢迎你，亲爱的 Photory 用户', 'Welcome, dear Photory user') }} {{ username }}</span>
           <button class="icon-btn" title="返回首页" @click="go('/')">🏡</button>
           <button class="icon-btn" title="退出登录" @click="logout">🚪</button>
         </div>
@@ -312,7 +427,7 @@ watch(
               <div class="icon">📸</div>
               <div class="text">
                 <h1>Photory</h1>
-                <p>随时随地上传</p>
+                <p>{{ text('随时随地上传', 'Upload anytime') }}</p>
               </div>
             </div>
             <button class="icon-btn ghost" @click="closeNav">✕</button>
@@ -330,19 +445,31 @@ watch(
           <div class="drop-inner">
             <div class="upload-icon">⬆️</div>
             <h2>拖拽或轻点选择</h2>
-            <p>手机可直接拍照或从相册选图，支持 JPG / PNG / GIF / WebP / HEIC</p>
-            <button class="select-btn" @click="triggerSelectFiles">点击选择 / 拍照</button>
+            <p>{{ text(`手机端可拍照或选相册，支持 ${supportedExtLabel}`, `Mobile capture/album supported: ${supportedExtLabel}`) }}</p>
+            <div v-if="queueStats.totalCount" class="queue-stats">
+              {{ queueStatsText }}
+            </div>
+            <div class="select-row">
+              <button class="select-btn" @click="triggerSelectFiles">{{ text('点击选择 / 拍照', 'Choose files / Capture') }}</button>
+              <button class="select-btn ghost" @click="triggerSelectFolder">{{ text('选择文件夹', 'Choose folder') }}</button>
+            </div>
             <input
               ref="fileInputRef"
               type="file"
               multiple
-              accept="image/*"
+              :accept="`image/*,.jpg,.jpeg,.png,.gif,.webp,.bmp,.heic,.heif`"
               class="file-input"
               @change="onSelectFiles"
             />
-            <div v-if="selectedFiles.length" class="selected-tip">
-              已选择 {{ selectedFiles.length }} 个文件，点击“开始上传”进入队列
-            </div>
+            <input
+              ref="folderInputRef"
+              type="file"
+              multiple
+              webkitdirectory
+              directory
+              class="file-input"
+              @change="onSelectFolder"
+            />
           </div>
         </div>
 
@@ -399,7 +526,7 @@ watch(
               >
                 <span class="dot" :style="{ background: t.color }"></span>{{ t.name }} ×
               </span>
-              <span v-if="!tagList.length" class="muted">点击“新增标签”创建自定义分类</span>
+              <span v-if="!tagList.length" class="muted">点击“新增标签”创建自定义分类管理标签</span>
             </div>
           </div>
 
@@ -432,7 +559,8 @@ watch(
 
         <ul v-else class="upload-list">
           <li v-for="item in displayItems" :key="item.id" class="upload-item">
-            <div class="file-icon">🗂️</div>
+            <img v-if="item.previewUrl" class="file-thumb" :src="item.previewUrl" :alt="item.name" />
+            <div v-else class="file-icon">🗂️</div>
             <div class="file-main">
               <div class="file-name-row">
                 <span class="file-name">{{ item.name }}</span>
@@ -469,7 +597,7 @@ watch(
             <div class="queue-actions">
               <button v-if="item.status === 'uploading'" class="small-btn" @click="pauseItem(item)">暂停</button>
               <button v-else-if="item.status === 'paused'" class="small-btn" @click="resumeItem(item)">继续</button>
-              <button class="small-btn danger" @click="stopItem(item)">停止</button>
+              <button v-if="item.status === 'uploading' || item.status === 'paused'" class="small-btn danger" @click="stopItem(item)">取消</button>
               <button class="remove-btn" @click="removeItem(item.id)">×</button>
             </div>
           </li>
@@ -517,10 +645,12 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 100vh; paddin
 .upload-icon { font-size: 42px; margin-bottom: 10px; }
 .drop-inner h2 { margin: 8px 0; color: #ff3f87; }
 .drop-inner p { font-size: 13px; color: #a25c77; margin-bottom: 16px; }
+.queue-stats { display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 6px 12px; border-radius: 999px; margin: 0 auto 10px; font-size: 12px; color: #8c546e; background: rgba(255, 255, 255, 0.75); border: 1px solid rgba(255, 190, 210, 0.7); box-shadow: 0 8px 18px rgba(255, 165, 199, 0.18); }
+.select-row { display: flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
 .select-btn { border: none; border-radius: 999px; padding: 10px 22px; background: linear-gradient(135deg, #ff8bb3, #ff6fa0); color: #fff; font-size: 14px; cursor: pointer; box-shadow: 0 8px 18px rgba(255, 120, 165, 0.45); }
+.select-btn.ghost { background: #ffeef5; color: #b05f7a; box-shadow: none; border: 1px solid rgba(255, 180, 205, 0.7); }
 .select-btn:hover { transform: translateY(-1px); }
 .file-input { display: none; }
-.selected-tip { margin-top: 10px; font-size: 12px; color: #a35d76; }
 .upload-settings-card { background: rgba(255, 255, 255, 0.95); border-radius: 24px; padding: 20px 22px; box-shadow: 0 12px 24px rgba(255, 165, 199, 0.3); }
 .upload-settings-card h3 { margin: 0 0 10px; color: #ff4c8a; }
 .setting-item { margin-bottom: 14px; }
@@ -554,6 +684,7 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 100vh; paddin
 .empty-queue { background: rgba(255, 255, 255, 0.85); border-radius: 18px; padding: 18px; font-size: 13px; color: #a35d76; }
 .upload-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
 .upload-item { display: flex; align-items: center; gap: 10px; background: rgba(255, 255, 255, 0.96); border-radius: 16px; padding: 10px 12px; box-shadow: 0 8px 18px rgba(255, 165, 199, 0.27); }
+.file-thumb { width: 44px; height: 44px; border-radius: 12px; object-fit: cover; background: #f9edf3; border: 1px solid rgba(255, 190, 210, 0.55); }
 .file-icon { font-size: 20px; }
 .file-main { flex: 1; }
 .file-name-row { display: flex; justify-content: space-between; font-size: 13px; color: #613448; gap: 8px; }

@@ -29,3 +29,7 @@ class Config:
 
     AI_TIMEOUT = int(os.getenv("AI_TIMEOUT", "60"))
     AI_MAX_TAGS = int(os.getenv("AI_MAX_TAGS", "6"))
+
+    # Recycle bin retention/purge
+    RECYCLE_RETENTION_DAYS = int(os.getenv("RECYCLE_RETENTION_DAYS", "7"))
+    RECYCLE_PURGE_INTERVAL_SECONDS = int(os.getenv("RECYCLE_PURGE_INTERVAL_SECONDS", "3600"))

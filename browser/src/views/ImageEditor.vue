@@ -4,10 +4,16 @@ import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
+import { usePreferencesStore } from '@/stores/preferences'
+import { getNavLinks } from '@/utils/navLinks'
+import { useLocale } from '@/composables/useLocale'
 
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
+const preferencesStore = usePreferencesStore()
+const links = computed(() => getNavLinks(preferencesStore.language))
+const { text } = useLocale()
 
 const palette = ['#ff9db8', '#8ed0ff', '#ffd27f', '#9dd0a5', '#c3a0ff', '#f7a3ff']
 
@@ -31,17 +37,18 @@ const baseAdjustments = {
 }
 
 const editorState = ref({
-  cropPreset: 'free',
-  customCrop: { width: 1920, height: 1080 },
   rotation: 0,
   zoom: 1,
+  pan: { x: 0, y: 0 },
   adjustments: { ...baseAdjustments },
-  cropBox: { x: 0, y: 0, w: 1, h: 1 },
 })
 
-const cropHistory = ref([{ ...editorState.value }])
-const cropCursor = ref(0)
-const rotateHistory = ref([{ rotation: editorState.value.rotation, zoom: editorState.value.zoom }])
+type CropPreset = 'free' | '1:1' | '4:3' | '3:4' | '16:9' | '9:16' | '3:2' | '2:3' | 'custom'
+const cropPreset = ref<CropPreset>('free')
+const cropCustomW = ref<number | null>(null)
+const cropCustomH = ref<number | null>(null)
+
+const rotateHistory = ref([{ rotation: editorState.value.rotation, zoom: editorState.value.zoom, pan: { ...editorState.value.pan } }])
 const rotateCursor = ref(0)
 const adjustHistory = ref([{ ...editorState.value.adjustments }])
 const adjustCursor = ref(0)
@@ -50,11 +57,20 @@ const compareMode = ref<'side' | 'main'>('side')
 const showOriginal = ref(false)
 const exportOption = ref<'override' | 'new'>('override')
 const exportName = ref('')
-const exportFolder = ref('')
 const exportTags = ref<{ name: string; color: string }[]>([])
 const newExportTag = ref('')
 const newExportColor = ref(palette[0])
 const versionHistory = ref<{ id?: number; name: string; created_at: string; note: string; type: 'origin' | 'edit' }[]>([])
+
+interface AlbumOption {
+  id: number
+  title: string
+  visibility?: string
+}
+const albumOptions = ref<AlbumOption[]>([])
+const selectedAlbumIds = ref<number[]>([])
+const loadingAlbums = ref(false)
+const newAlbumTitle = ref('')
 
 const navOpen = ref(false)
 const toggleNav = () => (navOpen.value = !navOpen.value)
@@ -68,21 +84,15 @@ const originalUrl = computed(() => (detail.value ? withBase(`${detail.value.raw_
 const thumbUrl = computed(() => (detail.value ? withBase(`${detail.value.thumb_url || detail.value.raw_url}${tokenParam.value}${versionStamp.value}`) : ''))
 const previewSrc = computed(() => originalUrl.value || thumbUrl.value || fallbackImage)
 const stageRef = ref<HTMLElement | null>(null)
-const mainImgRef = ref<HTMLImageElement | null>(null)
-const imageBox = ref({ x: 0, y: 0, w: 1, h: 1 })
-const dragging = ref(false)
-const dragMode = ref<'move' | 'draw'>('move')
-const dragStart = ref({ x: 0, y: 0, box: { x: 0, y: 0, w: 1, h: 1 } })
+const stageSize = ref({ w: 1, h: 1 })
+const panning = ref(false)
+const panStart = ref({ x: 0, y: 0, pan: { x: 0, y: 0 } })
 
-const cropPresets = [
-  { label: '自由', value: 'free', aspect: 'auto' },
-  { label: '1:1', value: '1:1', aspect: '1 / 1' },
-  { label: '4:3', value: '4:3', aspect: '4 / 3' },
-  { label: '3:2', value: '3:2', aspect: '3 / 2' },
-  { label: '16:9', value: '16:9', aspect: '16 / 9' },
-  { label: '9:16', value: '9:16', aspect: '9 / 16' },
-  { label: '自定义', value: 'custom', aspect: 'custom' },
-]
+function updateStageSize() {
+  const rect = stageRef.value?.getBoundingClientRect()
+  if (!rect) return
+  stageSize.value = { w: rect.width || 1, h: rect.height || 1 }
+}
 
 const adjustmentDefs = [
   { key: 'brightness', label: '亮度', min: -100, max: 100 },
@@ -96,62 +106,71 @@ const adjustmentDefs = [
   { key: 'sharpen', label: '锐化', min: 0, max: 120 },
 ]
 
-const cropAspect = computed(() => {
-  if (editorState.value.cropPreset === 'custom') {
-    const w = Number(editorState.value.customCrop.width)
-    const h = Number(editorState.value.customCrop.height)
-    return w > 0 && h > 0 ? `${w} / ${h}` : 'auto'
-  }
-  const preset = cropPresets.find(p => p.value === editorState.value.cropPreset)
-  return preset?.aspect || 'auto'
-})
-const cropAspectLabel = computed(() => {
-  if (editorState.value.cropPreset === 'custom') {
-    const { width, height } = editorState.value.customCrop
-    return width && height ? `${width}:${height}` : '自定义'
-  }
-  return cropPresets.find(p => p.value === editorState.value.cropPreset)?.label || '自由'
-})
-const cropGuideStyle = computed(() => {
-  const box = editorState.value.cropBox
-  const img = imageBox.value
-  return {
-    left: `${(img.x + box.x * img.w) * 100}%`,
-    top: `${(img.y + box.y * img.h) * 100}%`,
-    width: `${box.w * img.w * 100}%`,
-    height: `${box.h * img.h * 100}%`,
-    aspectRatio: cropAspect.value === 'auto' ? 'unset' : cropAspect.value,
-  }
-})
-const clipStyle = computed(() => {
-  if (dragging.value) return {}
-  const box = editorState.value.cropBox
-  const top = box.y * 100
-  const left = box.x * 100
-  const bottom = (1 - box.y - box.h) * 100
-  const right = (1 - box.x - box.w) * 100
-  return {
-    clipPath: `inset(${top}% ${right}% ${bottom}% ${left}%)`,
-  }
+function clamp01(v: number) {
+  if (Number.isNaN(v)) return 0
+  return Math.max(-1, Math.min(1, v))
+}
+
+type CropBox = { x: number; y: number; w: number; h: number }
+const freeCropBox = ref<CropBox | null>(null)
+const selectingCrop = ref(false)
+const selectStartNorm = ref({ x: 0, y: 0 })
+const selectNowNorm = ref({ x: 0, y: 0 })
+const selectBoxNorm = ref<CropBox | null>(null)
+
+const viewportRef = ref<HTMLElement | null>(null)
+const compareEditedRef = ref<HTMLElement | null>(null)
+const compareSize = ref({ w: 1, h: 1 })
+function updateCompareSize() {
+  const rect = compareEditedRef.value?.getBoundingClientRect()
+  if (!rect) return
+  compareSize.value = { w: rect.width || 1, h: rect.height || 1 }
+}
+
+const imageRatio = computed(() => {
+  const w = Number(detail.value?.width || 0)
+  const h = Number(detail.value?.height || 0)
+  if (!w || !h || !Number.isFinite(w) || !Number.isFinite(h)) return 1
+  return w / h
 })
 
-const editedStyle = computed(() => {
+const filterCss = computed(() => {
   const a = editorState.value.adjustments
   const brightness = 1 + (a.brightness + a.exposure * 0.6) / 100
   const contrast = 1 + (a.contrast + a.highlights * 0.35 - a.shadows * 0.25) / 100
   const saturation = 1 + a.saturation / 100
   const warmth = 1 + a.temperature / 200
   const hue = a.tint
-  const sharpen = Math.max(0, a.sharpen) / 200
-  return {
-    filter: `brightness(${brightness}) contrast(${contrast}) saturate(${saturation * warmth}) hue-rotate(${hue}deg) sepia(${Math.max(
-      0,
-      a.temperature
-    ) / 140}) drop-shadow(0 8px 18px rgba(0,0,0,${0.08 + sharpen}))`,
-    transform: `rotate(${editorState.value.rotation}deg) scale(${editorState.value.zoom})`,
-    ...clipStyle.value,
-  }
+  return `brightness(${brightness}) contrast(${contrast}) saturate(${saturation * warmth}) hue-rotate(${hue}deg) sepia(${Math.max(0, a.temperature) / 140})`
 })
+
+function clamp01Unit(v: number) {
+  if (!Number.isFinite(v)) return 0
+  return Math.max(0, Math.min(1, v))
+}
+function normalizeBox(box: CropBox): CropBox {
+  let x = clamp01Unit(box.x)
+  let y = clamp01Unit(box.y)
+  let w = clamp01Unit(box.w)
+  let h = clamp01Unit(box.h)
+  if (w <= 0 || h <= 0) return { x: 0, y: 0, w: 1, h: 1 }
+  if (x + w > 1) w = 1 - x
+  if (y + h > 1) h = 1 - y
+  w = Math.max(0.0001, w)
+  h = Math.max(0.0001, h)
+  return { x, y, w, h }
+}
+function centerBoxByRatio(targetRatio: number): CropBox {
+  const imgRatio = imageRatio.value || 1
+  const ratio = Math.max(0.0001, Number(targetRatio) || 1)
+  if (imgRatio >= ratio) {
+    const w = ratio / imgRatio
+    return { x: (1 - w) / 2, y: 0, w, h: 1 }
+  }
+  const h = imgRatio / ratio
+  return { x: 0, y: (1 - h) / 2, w: 1, h }
+}
+
 const exifTags = computed(() => Array.from(new Set(detail.value?.exif_tags || [])))
 
 async function fetchDetail() {
@@ -160,11 +179,10 @@ async function fetchDetail() {
     const res = await axios.get(`/api/v1/images/${route.params.id}`)
     detail.value = res.data
     exportName.value = res.data.name || res.data.original_name || '编辑版本'
-    exportFolder.value = res.data.folder || '默认图库'
     exportTags.value = (res.data.tag_objects || []).map((t: any) => ({ name: t.name, color: t.color || palette[0] }))
+    selectedAlbumIds.value = Array.isArray(res.data.album_ids) ? res.data.album_ids : []
     versionHistory.value = (res.data.version_history || []).map((v: any) => ({ ...v, type: 'edit' as const }))
     resetHistories()
-    nextTick(updateImageBox)
   } catch (err) {
     ElMessage.error('获取图片详情失败')
     router.push('/')
@@ -175,16 +193,18 @@ async function fetchDetail() {
 
 function resetHistories() {
   editorState.value = {
-    cropPreset: 'free',
-    customCrop: { width: 1920, height: 1080 },
     rotation: 0,
     zoom: 1,
+    pan: { x: 0, y: 0 },
     adjustments: { ...baseAdjustments },
-    cropBox: { x: 0, y: 0, w: 1, h: 1 },
   }
-  cropHistory.value = [{ ...editorState.value }]
-  cropCursor.value = 0
-  rotateHistory.value = [{ rotation: 0, zoom: 1 }]
+  cropPreset.value = 'free'
+  cropCustomW.value = null
+  cropCustomH.value = null
+  freeCropBox.value = null
+  selectingCrop.value = false
+  selectBoxNorm.value = null
+  rotateHistory.value = [{ rotation: 0, zoom: 1, pan: { x: 0, y: 0 } }]
   rotateCursor.value = 0
   adjustHistory.value = [{ ...baseAdjustments }]
   adjustCursor.value = 0
@@ -197,38 +217,13 @@ function restoreOriginal() {
   ElMessage.success('已恢复到初始编辑状态')
 }
 
-function pushCropHistory() {
-  cropHistory.value = cropHistory.value.slice(0, cropCursor.value + 1)
-  cropHistory.value.push({
-    ...editorState.value,
-    customCrop: { ...editorState.value.customCrop },
-    cropBox: { ...editorState.value.cropBox },
-    adjustments: { ...editorState.value.adjustments },
-  })
-  if (cropHistory.value.length > 30) cropHistory.value.shift()
-  cropCursor.value = cropHistory.value.length - 1
-}
-function cropUndo() {
-  if (cropCursor.value <= 0) return
-  cropCursor.value -= 1
-  const state: any = cropHistory.value[cropCursor.value]
-  editorState.value = {
-    ...state,
-    customCrop: { ...state.customCrop },
-    cropBox: { ...state.cropBox },
-    adjustments: { ...state.adjustments },
-  }
-}
-function cropReset() {
-  editorState.value.cropPreset = 'free'
-  editorState.value.customCrop = { width: 1920, height: 1080 }
-  editorState.value.cropBox = { x: 0, y: 0, w: 1, h: 1 }
-  pushCropHistory()
-}
-
 function pushRotateHistory() {
   rotateHistory.value = rotateHistory.value.slice(0, rotateCursor.value + 1)
-  rotateHistory.value.push({ rotation: editorState.value.rotation, zoom: editorState.value.zoom })
+  rotateHistory.value.push({
+    rotation: editorState.value.rotation,
+    zoom: editorState.value.zoom,
+    pan: { ...editorState.value.pan },
+  })
   if (rotateHistory.value.length > 30) rotateHistory.value.shift()
   rotateCursor.value = rotateHistory.value.length - 1
 }
@@ -238,10 +233,12 @@ function rotateUndo() {
   const state = rotateHistory.value[rotateCursor.value]
   editorState.value.rotation = state.rotation
   editorState.value.zoom = state.zoom
+  editorState.value.pan = { ...state.pan }
 }
 function rotateReset() {
   editorState.value.rotation = 0
   editorState.value.zoom = 1
+  editorState.value.pan = { x: 0, y: 0 }
   pushRotateHistory()
 }
 
@@ -261,44 +258,141 @@ function adjustReset() {
   pushAdjustHistory()
 }
 
-function centerBoxForRatio(ratio: number) {
-  ratio = Math.max(0.01, ratio)
-  let w = 0.9
-  let h = w / ratio
-  if (h > 0.9) {
-    h = 0.9
-    w = h * ratio
-  }
-  const x = (1 - w) / 2
-  const y = (1 - h) / 2
-  editorState.value.cropBox = { x, y, w, h }
+function resetView() {
+  editorState.value.zoom = 1
+  editorState.value.pan = { x: 0, y: 0 }
+  pushRotateHistory()
 }
 
-function applyCropPreset(value: string) {
-  editorState.value.cropPreset = value
-  if (value === 'free') {
-    editorState.value.cropBox = { x: 0, y: 0, w: 1, h: 1 }
-  } else if (value === 'custom') {
-    const w = Number(editorState.value.customCrop.width) || 1
-    const h = Number(editorState.value.customCrop.height) || 1
-    centerBoxForRatio(w / h)
-  } else {
-    const preset = cropPresets.find(p => p.value === value)
-    if (preset && preset.aspect !== 'auto') {
-      const parts = preset.aspect.split('/').map(s => Number(s.trim()))
-      const a = parts[0]
-      const b = parts[1]
-      if (a > 0 && b > 0) centerBoxForRatio(a / b)
-    }
+const cropRatio = computed<number | null>(() => {
+  const preset = cropPreset.value
+  if (!preset || preset === 'free') return null
+  if (preset === 'custom') {
+    const w = Number(cropCustomW.value)
+    const h = Number(cropCustomH.value)
+    if (!w || !h || !Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return null
+    return w / h
   }
-  pushCropHistory()
+  if (preset.includes(':')) {
+    const [a, b] = preset.split(':').map(Number)
+    if (!a || !b) return null
+    return a / b
+  }
+  return null
+})
+
+const activeViewportRatio = computed(() => {
+  if (cropPreset.value === 'free') {
+    if (!freeCropBox.value) return imageRatio.value || 1
+    const b = normalizeBox(freeCropBox.value)
+    return ((b.w / b.h) * (imageRatio.value || 1)) || 1
+  }
+  return cropRatio.value || imageRatio.value || 1
+})
+const viewportPx = computed(() => {
+  const ratio = activeViewportRatio.value || 1
+  const inset = 14 * 2
+  const availW = Math.max(1, stageSize.value.w - inset)
+  const availH = Math.max(1, stageSize.value.h - inset)
+  let w = availW
+  let h = w / ratio
+  if (h > availH) {
+    h = availH
+    w = h * ratio
+  }
+  return { w: Math.round(w), h: Math.round(h) }
+})
+
+const viewportStyle = computed(() => {
+  return {
+    width: `${viewportPx.value.w}px`,
+    height: `${viewportPx.value.h}px`,
+    left: '50%',
+    top: '50%',
+    transform: 'translate(-50%, -50%)',
+  }
+})
+
+const baseBox = computed<CropBox>(() => {
+  if (cropPreset.value === 'free') return freeCropBox.value ? normalizeBox(freeCropBox.value) : { x: 0, y: 0, w: 1, h: 1 }
+  const ratio = cropRatio.value
+  if (!ratio) return { x: 0, y: 0, w: 1, h: 1 }
+  return normalizeBox(centerBoxByRatio(ratio))
+})
+
+const effectiveBox = computed<CropBox>(() => {
+  const zoom = Math.max(1, Number(editorState.value.zoom) || 1)
+  const base = baseBox.value
+  if (zoom <= 1.000001) return base
+  const w = base.w / zoom
+  const h = base.h / zoom
+  const slackX = Math.max(0, (base.w - w) / 2)
+  const slackY = Math.max(0, (base.h - h) / 2)
+  const pan = editorState.value.pan || { x: 0, y: 0 }
+  const px = clamp01(Number(pan.x) || 0)
+  const py = clamp01(Number(pan.y) || 0)
+  const cx = base.x + base.w / 2 + px * slackX
+  const cy = base.y + base.h / 2 + py * slackY
+  let x = cx - w / 2
+  let y = cy - h / 2
+  x = Math.max(base.x, Math.min(base.x + base.w - w, x))
+  y = Math.max(base.y, Math.min(base.y + base.h - h, y))
+  return normalizeBox({ x, y, w, h })
+})
+
+function surfaceStyle(box: CropBox, size: { w: number; h: number }, applyEdits: boolean) {
+  const safe = normalizeBox(box)
+  const w = Math.max(1, Number(size.w) || 1)
+  const h = Math.max(1, Number(size.h) || 1)
+  const bgW = w / safe.w
+  const bgH = h / safe.h
+  const bgX = -safe.x * bgW
+  const bgY = -safe.y * bgH
+  return {
+    backgroundImage: `url(${previewSrc.value})`,
+    backgroundRepeat: 'no-repeat',
+    backgroundSize: `${bgW}px ${bgH}px`,
+    backgroundPosition: `${bgX}px ${bgY}px`,
+    filter: applyEdits ? filterCss.value : 'none',
+    transform: applyEdits ? `rotate(${Number(editorState.value.rotation) || 0}deg)` : 'none',
+    transformOrigin: 'center center',
+  }
 }
-function updateCustomCrop() {
-  if (editorState.value.cropPreset !== 'custom') return
-  const w = Number(editorState.value.customCrop.width) || 1
-  const h = Number(editorState.value.customCrop.height) || 1
-  centerBoxForRatio(w / h)
-  pushCropHistory()
+
+const stageSurfaceStyle = computed(() => surfaceStyle(showOriginal.value ? { x: 0, y: 0, w: 1, h: 1 } : effectiveBox.value, viewportPx.value, !showOriginal.value))
+const compareEditedStyle = computed(() => surfaceStyle(effectiveBox.value, compareSize.value, true))
+const compareViewportStyle = computed(() => ({ aspectRatio: String(activeViewportRatio.value || 1) }))
+
+const selectionStyle = computed(() => {
+  if (!selectingCrop.value || !selectBoxNorm.value) return null
+  const b = normalizeBox(selectBoxNorm.value)
+  return {
+    left: `${Math.round(b.x * viewportPx.value.w)}px`,
+    top: `${Math.round(b.y * viewportPx.value.h)}px`,
+    width: `${Math.round(b.w * viewportPx.value.w)}px`,
+    height: `${Math.round(b.h * viewportPx.value.h)}px`,
+  }
+})
+
+function setCropPreset(preset: CropPreset) {
+  cropPreset.value = preset
+  if (preset !== 'custom') {
+    cropCustomW.value = null
+    cropCustomH.value = null
+  }
+  if (preset !== 'free') freeCropBox.value = null
+  editorState.value.zoom = 1
+  editorState.value.pan = { x: 0, y: 0 }
+  showOriginal.value = false
+}
+function resetCrop() {
+  cropPreset.value = 'free'
+  cropCustomW.value = null
+  cropCustomH.value = null
+  freeCropBox.value = null
+  editorState.value.zoom = 1
+  editorState.value.pan = { x: 0, y: 0 }
+  showOriginal.value = false
 }
 
 function applyRotation(delta: number) {
@@ -310,8 +404,22 @@ function updateRotation(value: number, commit = false) {
   if (commit) pushRotateHistory()
 }
 function updateZoom(value: number, commit = false) {
-  editorState.value.zoom = value
+  const next = Math.max(1, Math.min(4, Number(value) || 1))
+  editorState.value.zoom = Number(next.toFixed(2))
+  if (editorState.value.zoom <= 1) editorState.value.pan = { x: 0, y: 0 }
   if (commit) pushRotateHistory()
+}
+function bumpZoom(delta: number) {
+  const next = Math.max(1, Math.min(4, Number(editorState.value.zoom || 1) + delta))
+  editorState.value.zoom = Number(next.toFixed(2))
+  if (editorState.value.zoom <= 1) editorState.value.pan = { x: 0, y: 0 }
+  pushRotateHistory()
+}
+
+function onWheel(e: WheelEvent) {
+  const step = e.shiftKey ? 0.2 : 0.1
+  const dir = e.deltaY > 0 ? -1 : 1
+  updateZoom(Number(editorState.value.zoom || 1) + dir * step, true)
 }
 
 function setAdjustment(key: string, value: number, commit = false) {
@@ -367,20 +475,20 @@ async function saveVersion(mode?: 'override' | 'new') {
     const payload: any = {
       option: target,
       name: exportName.value || detail.value?.name,
-      folder: exportFolder.value || detail.value?.folder,
+      album_ids: selectedAlbumIds.value,
       tags: exportTags.value,
       crop: {
-        preset: editorState.value.cropPreset,
-        width: editorState.value.customCrop.width,
-        height: editorState.value.customCrop.height,
+        preset: cropPreset.value,
+        width: cropCustomW.value,
+        height: cropCustomH.value,
       },
+      crop_box: cropPreset.value === 'free' && freeCropBox.value ? normalizeBox(freeCropBox.value) : undefined,
       rotation: editorState.value.rotation,
       zoom: editorState.value.zoom,
+      pan: editorState.value.pan,
       adjustments: editorState.value.adjustments,
     }
-    if (editorState.value.cropPreset === 'free') {
-      payload.crop_box = editorState.value.cropBox
-    }
+    if (!payload.crop_box) delete payload.crop_box
     const res = await axios.post(`/api/v1/images/${route.params.id}/export`, payload)
     const item = res.data.item
     detail.value = item
@@ -396,92 +504,158 @@ async function saveVersion(mode?: 'override' | 'new') {
   }
 }
 
-function updateImageBox() {
-  const stageRect = stageRef.value?.getBoundingClientRect()
-  const imgRect = mainImgRef.value?.getBoundingClientRect()
-  if (!stageRect || !imgRect) return
-  const w = stageRect.width || 1
-  const h = stageRect.height || 1
-  imageBox.value = {
-    x: (imgRect.left - stageRect.left) / w,
-    y: (imgRect.top - stageRect.top) / h,
-    w: imgRect.width / w,
-    h: imgRect.height / h,
-  }
-}
-
-function cropFillsStage(box: { x: number; y: number; w: number; h: number }) {
-  const epsilon = 0.001
-  return box.x <= epsilon && box.y <= epsilon && box.w >= 1 - epsilon && box.h >= 1 - epsilon
-}
-
-function stagePos(e: MouseEvent) {
-  const rect = stageRef.value?.getBoundingClientRect()
-  if (!rect) return { x: 0, y: 0 }
-  const rawX = (e.clientX - rect.left) / rect.width
-  const rawY = (e.clientY - rect.top) / rect.height
-  const img = imageBox.value
-  const x = (rawX - img.x) / Math.max(img.w, 0.0001)
-  const y = (rawY - img.y) / Math.max(img.h, 0.0001)
-  return {
-    x: Math.min(1, Math.max(0, x)),
-    y: Math.min(1, Math.max(0, y)),
-  }
-}
-
-function startCrop(e: MouseEvent) {
-  if (editorState.value.cropPreset !== 'free') return
+function startPan(e: PointerEvent) {
   if (e.button !== 0) return
-  e.preventDefault()
-  const targetIsArea = (e.target as HTMLElement).classList.contains('area')
-  const forceDraw = e.shiftKey || e.altKey || cropFillsStage(editorState.value.cropBox)
-  dragMode.value = targetIsArea && !forceDraw ? 'move' : 'draw'
-  dragging.value = true
-  dragStart.value = { x: stagePos(e).x, y: stagePos(e).y, box: { ...editorState.value.cropBox } }
-  window.addEventListener('mousemove', onCropMove)
-  window.addEventListener('mouseup', endCrop)
-}
+  const rect = viewportRef.value?.getBoundingClientRect()
+  if (!rect) return
 
-function onCropMove(e: MouseEvent) {
-  if (!dragging.value) return
-  const pos = stagePos(e)
-  const box = { ...editorState.value.cropBox }
-  if (dragMode.value === 'move') {
-    const dx = pos.x - dragStart.value.x
-    const dy = pos.y - dragStart.value.y
-    box.x = Math.min(1 - box.w, Math.max(0, dragStart.value.box.x + dx))
-    box.y = Math.min(1 - box.h, Math.max(0, dragStart.value.box.y + dy))
-  } else {
-    const x1 = Math.min(pos.x, dragStart.value.x)
-    const y1 = Math.min(pos.y, dragStart.value.y)
-    const w = Math.abs(pos.x - dragStart.value.x)
-    const h = Math.abs(pos.y - dragStart.value.y)
-    box.x = Math.max(0, Math.min(1, x1))
-    box.y = Math.max(0, Math.min(1, y1))
-    box.w = Math.min(1 - box.x, w)
-    box.h = Math.min(1 - box.y, h)
+  const zoom = Math.max(1, Number(editorState.value.zoom) || 1)
+  const nx = clamp01Unit((e.clientX - rect.left) / rect.width)
+  const ny = clamp01Unit((e.clientY - rect.top) / rect.height)
+
+  if (cropPreset.value === 'free' && zoom <= 1.000001) {
+    e.preventDefault()
+    selectingCrop.value = true
+    selectStartNorm.value = { x: nx, y: ny }
+    selectNowNorm.value = { x: nx, y: ny }
+    selectBoxNorm.value = { x: nx, y: ny, w: 0.0001, h: 0.0001 }
+    ;(e.currentTarget as HTMLElement | null)?.setPointerCapture?.(e.pointerId)
+    return
   }
-  editorState.value.cropBox = box
+
+  if (zoom <= 1.000001) return
+  e.preventDefault()
+  panning.value = true
+  panStart.value = { x: e.clientX, y: e.clientY, pan: { ...editorState.value.pan } }
+  ;(e.currentTarget as HTMLElement | null)?.setPointerCapture?.(e.pointerId)
 }
 
-function endCrop() {
-  if (!dragging.value) return
-  dragging.value = false
-  window.removeEventListener('mousemove', onCropMove)
-  window.removeEventListener('mouseup', endCrop)
-  pushCropHistory()
+function onPanMove(e: PointerEvent) {
+  const rect = viewportRef.value?.getBoundingClientRect()
+  if (!rect) return
+
+  if (selectingCrop.value) {
+    const nx = clamp01Unit((e.clientX - rect.left) / rect.width)
+    const ny = clamp01Unit((e.clientY - rect.top) / rect.height)
+    selectNowNorm.value = { x: nx, y: ny }
+    const x0 = selectStartNorm.value.x
+    const y0 = selectStartNorm.value.y
+    const x1 = nx
+    const y1 = ny
+    const x = Math.min(x0, x1)
+    const y = Math.min(y0, y1)
+    const w = Math.abs(x1 - x0)
+    const h = Math.abs(y1 - y0)
+    selectBoxNorm.value = normalizeBox({ x, y, w, h })
+    return
+  }
+
+  if (!panning.value) return
+  const zoom = Math.max(1, Number(editorState.value.zoom) || 1)
+  if (zoom <= 1.000001) return
+  const dx = e.clientX - panStart.value.x
+  const dy = e.clientY - panStart.value.y
+  const denomX = Math.max(1, (zoom - 1) * rect.width)
+  const denomY = Math.max(1, (zoom - 1) * rect.height)
+  const nextX = panStart.value.pan.x + (dx * 2) / denomX
+  const nextY = panStart.value.pan.y + (dy * 2) / denomY
+  editorState.value.pan = { x: clamp01(nextX), y: clamp01(nextY) }
+}
+
+function endPan() {
+  if (selectingCrop.value) {
+    selectingCrop.value = false
+    const b = selectBoxNorm.value ? normalizeBox(selectBoxNorm.value) : null
+    selectBoxNorm.value = null
+    if (b && b.w > 0.01 && b.h > 0.01) {
+      freeCropBox.value = b
+      showOriginal.value = false
+      editorState.value.zoom = 1
+      editorState.value.pan = { x: 0, y: 0 }
+    }
+    return
+  }
+  if (!panning.value) return
+  panning.value = false
+  pushRotateHistory()
 }
 
 onMounted(() => {
-  window.addEventListener('resize', updateImageBox)
+  window.addEventListener('resize', updateStageSize)
+  window.addEventListener('resize', updateCompareSize)
+  fetchAlbums()
   fetchDetail()
+  nextTick(() => {
+    updateStageSize()
+    updateCompareSize()
+  })
 })
-onUnmounted(() => window.removeEventListener('resize', updateImageBox))
-watch(previewSrc, () => nextTick(updateImageBox))
-watch(
-  () => [editorState.value.zoom, editorState.value.rotation],
-  () => nextTick(updateImageBox)
-)
+onUnmounted(() => {
+  window.removeEventListener('resize', updateStageSize)
+  window.removeEventListener('resize', updateCompareSize)
+})
+watch(previewSrc, () => nextTick(() => {
+  updateStageSize()
+  updateCompareSize()
+}))
+watch(activeViewportRatio, () => nextTick(updateCompareSize))
+watch(compareMode, () => nextTick(updateCompareSize))
+
+async function fetchAlbums() {
+  loadingAlbums.value = true
+  try {
+    const res = await axios.get('/api/v1/albums', { params: { page: 1, page_size: 100 } })
+    albumOptions.value = res.data.items || []
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.message || '获取相册列表失败')
+    albumOptions.value = []
+  } finally {
+    loadingAlbums.value = false
+  }
+}
+
+let albumRemoteTimer: number | null = null
+function remoteAlbumMethod(query: string) {
+  if (albumRemoteTimer) window.clearTimeout(albumRemoteTimer)
+  albumRemoteTimer = window.setTimeout(() => fetchAlbumsRemote(query), 120)
+}
+async function fetchAlbumsRemote(keyword: string) {
+  loadingAlbums.value = true
+  try {
+    const res = await axios.get('/api/v1/albums', { params: { page: 1, page_size: 30, keyword: keyword || '' } })
+    albumOptions.value = res.data.items || []
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.message || '获取相册列表失败')
+  } finally {
+    loadingAlbums.value = false
+  }
+}
+
+async function createAlbum() {
+  const title = newAlbumTitle.value.trim()
+  if (!title) {
+    ElMessage.warning('请输入相册名称')
+    return
+  }
+  try {
+    const res = await axios.post('/api/v1/albums', { title, visibility: 'private' })
+    const created = res.data.album
+    if (created) {
+      albumOptions.value.unshift(created)
+      if (!selectedAlbumIds.value.includes(created.id)) selectedAlbumIds.value.push(created.id)
+    }
+    ElMessage.success('相册创建成功')
+    newAlbumTitle.value = ''
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.message || '创建相册失败')
+  }
+}
+
+function toggleAlbum(id: number) {
+  const idx = selectedAlbumIds.value.indexOf(id)
+  if (idx >= 0) selectedAlbumIds.value.splice(idx, 1)
+  else selectedAlbumIds.value.push(id)
+}
 </script>
 
 <template>
@@ -496,15 +670,7 @@ watch(
       </div>
 
       <nav>
-        <a v-for="item in [
-          { label: '首页', icon: '🏠', path: '/' },
-          { label: '搜索引擎', icon: '🔎', path: '/search' },
-          { label: '上传中心', icon: '☁️', path: '/upload' },
-          { label: '标签', icon: '🏷️', path: '/tags' },
-          { label: '相册', icon: '📚', path: '/albums' },
-          { label: 'AI 工作台', icon: '🤖', path: '/ai' },
-          { label: '回收站', icon: '🗑️', path: '/recycle' },
-        ]" :key="item.path" :class="{ active: $route.path === item.path || $route.path.startsWith(item.path + '/') }" @click="router.push(item.path)">
+        <a v-for="item in links" :key="item.path" :class="{ active: $route.path === item.path || $route.path.startsWith(item.path + '/') }" @click="router.push(item.path)">
           {{ item.icon }} {{ item.label }}
         </a>
       </nav>
@@ -515,20 +681,20 @@ watch(
         <button class="icon-btn ghost" @click="toggleNav">☰</button>
         <div class="mobile-brand">
           <span class="logo-mini">✂️</span>
-          <span>在线编辑</span>
+          <span>{{ text('在线编辑', 'Editor') }}</span>
         </div>
         <button class="icon-btn ghost" @click="goDetail">↩️</button>
       </header>
 
       <header class="topbar">
         <div class="left">
-          <div class="title">在线编辑器</div>
-          <div class="subtitle">支持裁剪 / 旋转 / 色彩调节，灵活对比与导出</div>
+          <div class="title">{{ text('在线编辑器', 'Online Editor') }}</div>
+          <div class="subtitle">{{ text('支持裁剪 / 旋转 / 色彩调节，灵活对比与导出', 'Crop, rotate, adjust colors, compare and export.') }}</div>
         </div>
         <div class="right">
-          <button class="pill-btn ghost" @click="download">下载</button>
-          <button class="pill-btn ghost" @click="restoreOriginal">恢复原图</button>
-          <button class="pill-btn danger" @click="handleExit">退出编辑</button>
+          <button class="pill-btn ghost" @click="download">{{ text('下载', 'Download') }}</button>
+          <button class="pill-btn ghost" @click="restoreOriginal">{{ text('恢复原图', 'Restore') }}</button>
+          <button class="pill-btn danger" @click="handleExit">{{ text('退出编辑', 'Exit') }}</button>
         </div>
       </header>
 
@@ -540,19 +706,13 @@ watch(
               <div class="icon">📸</div>
               <div class="text">
                 <h1>Photory</h1>
-                <p>在线编辑</p>
+                <p>{{ text('在线编辑', 'Editor') }}</p>
               </div>
             </div>
             <button class="icon-btn ghost" @click="closeNav">✕</button>
           </div>
           <nav>
-            <a v-for="item in [
-              { label: '首页', icon: '🏠', path: '/' },
-              { label: '搜索引擎', icon: '🔎', path: '/search' },
-              { label: '上传中心', icon: '☁️', path: '/upload' },
-              { label: '标签', icon: '🏷️', path: '/tags' },
-              { label: '回收站', icon: '🗑️', path: '/recycle' },
-            ]" :key="item.path" :class="{ active: $route.path === item.path || $route.path.startsWith(item.path + '/') }" @click="router.push(item.path)">
+            <a v-for="item in links" :key="item.path" :class="{ active: $route.path === item.path || $route.path.startsWith(item.path + '/') }" @click="router.push(item.path)">
               {{ item.icon }} {{ item.label }}
             </a>
           </nav>
@@ -585,12 +745,23 @@ watch(
           </div>
 
           <div class="preview-box">
-            <div class="image-stage" ref="stageRef" @mouseleave="showOriginal = false" @mousedown="startCrop">
-              <img :src="previewSrc" :alt="detail.name" class="main-img" ref="mainImgRef" @load="updateImageBox" :style="showOriginal ? {} : editedStyle" />
-              <div class="crop-guides" :class="{ active: cropAspect !== 'auto' }">
-                <div class="area" :style="cropGuideStyle">
-                  <span>{{ cropAspectLabel }}</span>
-                </div>
+            <div
+              class="image-stage"
+              ref="stageRef"
+              @mouseleave="showOriginal = false"
+              @wheel.prevent="onWheel"
+            >
+              <div
+                class="edit-viewport"
+                ref="viewportRef"
+                :style="viewportStyle"
+                @pointerdown="startPan"
+                @pointermove="onPanMove"
+                @pointerup="endPan"
+                @pointercancel="endPan"
+              >
+                <div class="edit-surface" :style="stageSurfaceStyle"></div>
+                <div v-if="selectionStyle" class="select-rect" :style="selectionStyle"></div>
               </div>
             </div>
           </div>
@@ -602,7 +773,9 @@ watch(
             </div>
             <div class="compare-card">
               <div class="card-title">编辑版</div>
-              <img :src="previewSrc" :alt="detail.name" :style="editedStyle" />
+              <div class="compare-viewport" ref="compareEditedRef" :style="compareViewportStyle">
+                <div class="edit-surface" :style="compareEditedStyle"></div>
+              </div>
             </div>
           </div>
 
@@ -617,25 +790,24 @@ watch(
           <div class="control-card">
             <div class="section-title">裁剪</div>
             <div class="preset-grid">
-              <button
-                v-for="preset in cropPresets"
-                :key="preset.value"
-                class="chip-btn"
-                :class="{ active: editorState.cropPreset === preset.value }"
-                @click="applyCropPreset(preset.value)"
-              >
-                {{ preset.label }}
-              </button>
+              <button class="chip-btn" :class="{ active: cropPreset === 'free' }" @click="setCropPreset('free')">自由</button>
+              <button class="chip-btn" :class="{ active: cropPreset === '1:1' }" @click="setCropPreset('1:1')">1:1</button>
+              <button class="chip-btn" :class="{ active: cropPreset === '4:3' }" @click="setCropPreset('4:3')">4:3</button>
+              <button class="chip-btn" :class="{ active: cropPreset === '3:4' }" @click="setCropPreset('3:4')">3:4</button>
+              <button class="chip-btn" :class="{ active: cropPreset === '16:9' }" @click="setCropPreset('16:9')">16:9</button>
+              <button class="chip-btn" :class="{ active: cropPreset === '9:16' }" @click="setCropPreset('9:16')">9:16</button>
+              <button class="chip-btn" :class="{ active: cropPreset === '3:2' }" @click="setCropPreset('3:2')">3:2</button>
+              <button class="chip-btn" :class="{ active: cropPreset === '2:3' }" @click="setCropPreset('2:3')">2:3</button>
+              <button class="chip-btn" :class="{ active: cropPreset === 'custom' }" @click="setCropPreset('custom')">自定义</button>
             </div>
-            <div class="custom-size" v-if="editorState.cropPreset === 'custom'">
-              <label>宽</label>
-              <input type="number" v-model.number="editorState.customCrop.width" min="1" @change="updateCustomCrop" />
-              <label>高</label>
-              <input type="number" v-model.number="editorState.customCrop.height" min="1" @change="updateCustomCrop" />
+            <div v-if="cropPreset === 'custom'" class="custom-size">
+              <span>宽</span>
+              <input class="text-input" type="number" min="1" step="1" v-model.number="cropCustomW" placeholder="W" />
+              <span>高</span>
+              <input class="text-input" type="number" min="1" step="1" v-model.number="cropCustomH" placeholder="H" />
             </div>
             <div class="module-actions">
-              <button class="pill-btn ghost mini" @click="cropUndo">撤销一步</button>
-              <button class="pill-btn ghost mini" @click="cropReset">全部重置</button>
+              <button class="pill-btn ghost mini" @click="resetCrop">重置裁剪</button>
             </div>
           </div>
 
@@ -663,13 +835,17 @@ watch(
               <div class="value">{{ editorState.zoom.toFixed(2) }}×</div>
               <input
                 type="range"
-                min="0.7"
-                max="1.4"
+                min="1"
+                max="4"
                 step="0.01"
                 :value="editorState.zoom"
                 @input="e => updateZoom(Number((e.target as HTMLInputElement).value))"
                 @change="e => updateZoom(Number((e.target as HTMLInputElement).value), true)"
               />
+            </div>
+            <div class="btn-row">
+              <button class="chip-btn ghost" @click="bumpZoom(-0.1)">−</button>
+              <button class="chip-btn ghost" @click="bumpZoom(0.1)">+</button>
             </div>
             <div class="module-actions">
               <button class="pill-btn ghost mini" @click="rotateUndo">撤销一步</button>
@@ -707,8 +883,31 @@ watch(
             <div class="form-grid">
               <label>图片名称</label>
               <input class="text-input" v-model="exportName" placeholder="输入图片名称" />
-              <label>文件夹</label>
-              <input class="text-input" v-model="exportFolder" placeholder="如：默认图库" />
+              <label>添加到相册</label>
+              <div>
+                <el-select
+                  v-model="selectedAlbumIds"
+                  class="album-select"
+                  multiple
+                  filterable
+                  remote
+                  clearable
+                  :remote-method="remoteAlbumMethod"
+                  :loading="loadingAlbums"
+                  placeholder="选择相册（下拉搜索，可多选）"
+                >
+                  <el-option v-for="album in albumOptions" :key="album.id" :label="album.title" :value="album.id">
+                    <span class="tag-option">
+                      <span class="dot album-dot"></span>
+                      {{ album.title }}
+                    </span>
+                  </el-option>
+                </el-select>
+                <div class="album-inline-create">
+                  <input class="text-input" v-model="newAlbumTitle" placeholder="新建相册名称" />
+                  <button class="pill-btn mini" :disabled="loadingAlbums" @click="createAlbum">+ 新建相册</button>
+                </div>
+              </div>
             </div>
             <div class="tag-add">
               <input class="text-input" v-model="newExportTag" placeholder="输入标签名称" @keyup.enter="addExportTag" />
@@ -730,7 +929,10 @@ watch(
             <div class="history-actions">
               <button class="pill-btn" :disabled="saving" @click="saveVersion(exportOption)">应用保存</button>
             </div>
+          </div>
 
+          <div class="control-card">
+            <div class="section-title">版本历史</div>
             <div class="version-list">
               <div v-if="!versionHistory.length" class="muted">暂无历史版本（仅覆盖操作会记录）</div>
               <div v-for="(version, index) in versionHistory" :key="index" class="version-item">
@@ -791,14 +993,20 @@ main { flex: 1; display: flex; flex-direction: column; }
 .view-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
 
 .preview-box { margin-top: 12px; padding: 12px; background: #fdf6fa; border-radius: 18px; }
-.image-stage { position: relative; border-radius: 16px; background: radial-gradient(circle at 30% 20%, rgba(255, 214, 230, 0.4), rgba(255, 231, 240, 0.95)); height: 520px; display: flex; align-items: center; justify-content: center; overflow: hidden; user-select: none; }
-.main-img { max-width: 100%; max-height: 100%; border-radius: 14px; transition: filter 0.12s ease, transform 0.12s ease; background: #f6e9f1; }
+.image-stage { position: relative; border-radius: 16px; background: radial-gradient(circle at 30% 20%, rgba(255, 214, 230, 0.4), rgba(255, 231, 240, 0.95)); height: 520px; display: flex; align-items: center; justify-content: center; overflow: hidden; user-select: none; touch-action: none; cursor: grab; }
+.image-stage:active { cursor: grabbing; }
+.edit-viewport { position: absolute; border-radius: 14px; overflow: hidden; background: #f6e9f1; box-shadow: inset 0 0 0 1px rgba(255, 180, 205, 0.65); }
+.edit-surface { position: absolute; inset: 0; border-radius: inherit; background-color: #f6e9f1; transition: filter 0.12s ease, transform 0.08s ease; will-change: transform, filter, background-position, background-size; }
+.select-rect { position: absolute; border: 2px solid rgba(255, 111, 160, 0.95); background: rgba(255, 255, 255, 0.12); border-radius: 12px; pointer-events: none; box-shadow: 0 8px 22px rgba(255, 120, 165, 0.18); }
+.main-img { max-width: 100%; max-height: 100%; border-radius: 14px; transition: filter 0.12s ease, transform 0.08s ease; background: #f6e9f1; will-change: transform; }
 .crop-guides { position: absolute; inset: 14px; border: 1px dashed transparent; border-radius: 14px; pointer-events: none; }
-.crop-guides .area { position: absolute; border: 1px solid rgba(255, 120, 165, 0.8); background: rgba(255, 255, 255, 0.14); display: flex; align-items: center; justify-content: center; color: #ff6fa0; font-size: 12px; border-radius: 10px; pointer-events: auto; }
+.crop-guides .area { position: absolute; border: 1px solid rgba(255, 120, 165, 0.8); background: rgba(255, 255, 255, 0.10); border-radius: 10px; pointer-events: none; box-shadow: 0 0 0 9999px rgba(255, 255, 255, 0.06); }
 .crop-guides.active { border-color: rgba(255, 157, 184, 0.6); }
 .compare-panel { margin-top: 12px; display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
 .compare-card { background: #fff8fb; border-radius: 14px; padding: 10px; box-shadow: 0 10px 18px rgba(255, 152, 201, 0.25); }
 .compare-card img { width: 100%; border-radius: 10px; object-fit: cover; background: #f9edf3; }
+.compare-viewport { position: relative; width: 100%; border-radius: 10px; overflow: hidden; background: #f9edf3; }
+.compare-viewport .edit-surface { border-radius: 10px; }
 .card-title { font-size: 13px; color: #b05f7a; margin-bottom: 6px; }
 .mobile-actions { display: none; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
 
@@ -811,6 +1019,12 @@ main { flex: 1; display: flex; flex-direction: column; }
 .chip-btn.ghost { background: #ffeef5; }
 .custom-size { display: grid; grid-template-columns: auto 1fr auto 1fr; align-items: center; gap: 6px; margin-top: 10px; font-size: 12px; color: #a35d76; }
 .custom-size input { width: 100%; border-radius: 10px; border: 1px solid rgba(255, 180, 205, 0.9); padding: 6px 10px; outline: none; }
+
+.album-select { width: 100%; }
+:deep(.album-select .el-select__wrapper) { border-radius: 14px; border: 1px solid rgba(255, 180, 205, 0.9); background: rgba(255, 255, 255, 0.92); box-shadow: none; }
+:deep(.album-select .el-select__placeholder) { color: #b57a90; }
+.tag-option { display: inline-flex; align-items: center; gap: 8px; }
+.album-dot { background: #ff9db8; }
 
 .btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
 .slider-row { display: grid; grid-template-columns: 70px 48px 1fr; align-items: center; gap: 10px; font-size: 13px; margin-top: 8px; }
@@ -825,6 +1039,11 @@ main { flex: 1; display: flex; flex-direction: column; }
 .radio { display: flex; align-items: center; gap: 6px; }
 .form-grid { display: grid; grid-template-columns: 100px 1fr; gap: 6px 10px; font-size: 13px; color: #a35d76; }
 .text-input { width: 100%; border-radius: 12px; border: 1px solid rgba(255, 180, 205, 0.9); padding: 8px 10px; font-size: 13px; color: #4b4b4b; outline: none; }
+.album-checks { display: flex; flex-wrap: wrap; gap: 8px; padding: 6px 0; }
+.album-check { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 999px; background: rgba(255, 255, 255, 0.92); border: 1px solid rgba(255, 180, 205, 0.8); color: #b05f7a; cursor: pointer; }
+.album-check input { accent-color: #ff6fa0; }
+.album-inline-create { margin-top: 8px; display: flex; gap: 8px; align-items: center; }
+.album-inline-create input { flex: 1; }
 .tag-add { display: grid; grid-template-columns: 1fr 100px auto; gap: 12px; margin: 8px 0; align-items: center; }
 .tag-line.export-tags { margin-top: 6px; }
 .history-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }

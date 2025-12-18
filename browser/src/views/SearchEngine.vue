@@ -6,6 +6,7 @@ import { ElMessage } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
 import { usePreferencesStore } from '@/stores/preferences'
 import { getNavLinks } from '@/utils/navLinks'
+import { useLocale } from '@/composables/useLocale'
 
 interface GalleryImage {
   id: number
@@ -27,6 +28,7 @@ const username = computed(() => authStore.user?.username || '访客')
 
 const preferencesStore = usePreferencesStore()
 const links = computed(() => getNavLinks(preferencesStore.language))
+const { text } = useLocale()
 const currentPath = computed(() => router.currentRoute.value.path)
 const go = (path: string) => { router.push(path); navOpen.value = false }
 const isActive = (path: string) => currentPath.value === path || currentPath.value.startsWith(path + '/')
@@ -59,14 +61,44 @@ const formatOptions = [
   { label: 'RAW / DNG', value: 'raw' },
 ]
 const sizeRange = ref<[number, number]>([0, 200]) // MB
-const exif = ref({
-  camera: '',
-  lens: '',
-  iso: '',
-  aperture: '',
-  focal_length: '',
-  shutter: '',
+const exifFields = ['camera', 'lens', 'iso', 'aperture', 'focal_length', 'shutter'] as const
+type ExifField = typeof exifFields[number]
+const exif = ref<Record<ExifField, string[]>>({
+  camera: [],
+  lens: [],
+  iso: [],
+  aperture: [],
+  focal_length: [],
+  shutter: [],
 })
+const exifOptions = ref<Record<ExifField, string[]>>({
+  camera: [],
+  lens: [],
+  iso: [],
+  aperture: [],
+  focal_length: [],
+  shutter: [],
+})
+const exifLoading = ref<Record<ExifField, boolean>>({
+  camera: false,
+  lens: false,
+  iso: false,
+  aperture: false,
+  focal_length: false,
+  shutter: false,
+})
+
+async function fetchExifOptions(field: ExifField, query = '') {
+  exifLoading.value[field] = true
+  try {
+    const res = await axios.get('/api/v1/images/exif-options', { params: { field, keyword: query, limit: 20 } })
+    exifOptions.value[field] = (res.data.items || []).filter(Boolean)
+  } catch {
+    /* ignore */
+  } finally {
+    exifLoading.value[field] = false
+  }
+}
 
 const viewMode = ref<'grid' | 'masonry' | 'large'>('grid')
 const sortBy = ref('captured_desc')
@@ -174,8 +206,8 @@ function buildParams() {
   if (sizeRange.value[0] > 0) params.size_min_mb = sizeRange.value[0]
   if (sizeRange.value[1] < 200) params.size_max_mb = sizeRange.value[1]
   Object.entries(exif.value).forEach(([k, v]) => {
-    const val = (v as string).trim()
-    if (val) params[k] = val
+    const vals = Array.isArray(v) ? v.map(s => String(s || '').trim()).filter(Boolean) : []
+    if (vals.length) params[k] = vals.join(',')
   })
   return params
 }
@@ -210,7 +242,7 @@ function resetFilters() {
   selectedAlbums.value = []
   formats.value = []
   sizeRange.value = [0, 200]
-  exif.value = { camera: '', lens: '', iso: '', aperture: '', focal_length: '', shutter: '' }
+  exif.value = { camera: [], lens: [], iso: [], aperture: [], focal_length: [], shutter: [] }
   dateType.value = 'captured'
   dateRange.value = []
   quickPreset.value = ''
@@ -234,6 +266,7 @@ const goDetail = (id: number) => router.push(`/images/${id}`)
 onMounted(() => {
   fetchTags()
   fetchAlbums()
+  exifFields.forEach(f => fetchExifOptions(f))
   fetchResults()
 })
 </script>
@@ -260,18 +293,18 @@ onMounted(() => {
         <button class="icon-btn ghost" @click="toggleNav">☰</button>
         <div class="mobile-brand">
           <span class="logo-mini">📸</span>
-          <span>搜索</span>
+          <span>{{ text('搜索', 'Search') }}</span>
         </div>
         <button class="icon-btn ghost" @click="go('/')">🏡</button>
       </header>
 
       <header class="topbar">
         <div class="left">
-          <div class="title">搜索引擎 · 全局检索</div>
-          <div class="subtitle">名称/标签/EXIF/时间/文件属性等多维度组合筛选，快速命中想要的图片</div>
+          <div class="title">{{ text('搜索引擎 · 全局检索', 'Search · Global') }}</div>
+          <div class="subtitle">{{ text('支持图片名称/标签/描述/EXIF/文件属性等多维度组合筛选，快速命中你想要的图片~', 'Search by name, tags, description, EXIF and more to find what you want fast.') }}</div>
         </div>
         <div class="right">
-          <span class="welcome">欢迎你，亲爱的 Photory 用户 {{ username }}</span>
+          <span class="welcome">{{ text('欢迎你，亲爱的 Photory 用户', 'Welcome, dear Photory user') }} {{ username }}</span>
         </div>
       </header>
 
@@ -283,7 +316,7 @@ onMounted(() => {
               <div class="icon">📸</div>
               <div class="text">
                 <h1>Photory</h1>
-                <p>随时随地 · 全局搜索</p>
+                <p>{{ text('随时随地 · 全局搜索', 'Anytime · Global search') }}</p>
               </div>
             </div>
             <button class="icon-btn ghost" @click="closeNav">✕</button>
@@ -300,7 +333,7 @@ onMounted(() => {
         <div class="main-search">
           <input
             v-model="keyword"
-            placeholder="输入图片名称、文件名或关键词（回车搜索）"
+            placeholder="输入图片名称、标签和描述（包括AI）、所属相册等关键词（回车搜索）"
             @keyup.enter="handleSearch"
           />
           <el-select
@@ -402,12 +435,90 @@ onMounted(() => {
             <div class="filter-card exif-card">
               <div class="label">EXIF 维度</div>
               <div class="exif-grid">
-                <input v-model="exif.camera" placeholder="相机型号" />
-                <input v-model="exif.lens" placeholder="镜头型号" />
-                <input v-model="exif.iso" placeholder="ISO (如 100)" />
-                <input v-model="exif.aperture" placeholder="光圈 (如 f/1.8)" />
-                <input v-model="exif.focal_length" placeholder="焦距 (如 35mm)" />
-                <input v-model="exif.shutter" placeholder="快门 (如 1/125s)" />
+                <el-select
+                  v-model="exif.camera"
+                  multiple
+                  filterable
+                  remote
+                  clearable
+                  allow-create
+                  default-first-option
+                  :remote-method="(q: string) => fetchExifOptions('camera', q)"
+                  :loading="exifLoading.camera"
+                  placeholder="相机型号（可多选 / 自动补全）"
+                >
+                  <el-option v-for="opt in exifOptions.camera" :key="opt" :label="opt" :value="opt" />
+                </el-select>
+                <el-select
+                  v-model="exif.lens"
+                  multiple
+                  filterable
+                  remote
+                  clearable
+                  allow-create
+                  default-first-option
+                  :remote-method="(q: string) => fetchExifOptions('lens', q)"
+                  :loading="exifLoading.lens"
+                  placeholder="镜头型号（可多选 / 自动补全）"
+                >
+                  <el-option v-for="opt in exifOptions.lens" :key="opt" :label="opt" :value="opt" />
+                </el-select>
+                <el-select
+                  v-model="exif.iso"
+                  multiple
+                  filterable
+                  remote
+                  clearable
+                  allow-create
+                  default-first-option
+                  :remote-method="(q: string) => fetchExifOptions('iso', q)"
+                  :loading="exifLoading.iso"
+                  placeholder="ISO（可多选）"
+                >
+                  <el-option v-for="opt in exifOptions.iso" :key="opt" :label="opt" :value="opt" />
+                </el-select>
+                <el-select
+                  v-model="exif.aperture"
+                  multiple
+                  filterable
+                  remote
+                  clearable
+                  allow-create
+                  default-first-option
+                  :remote-method="(q: string) => fetchExifOptions('aperture', q)"
+                  :loading="exifLoading.aperture"
+                  placeholder="光圈（可多选，如 f/1.8）"
+                >
+                  <el-option v-for="opt in exifOptions.aperture" :key="opt" :label="opt" :value="opt" />
+                </el-select>
+                <el-select
+                  v-model="exif.focal_length"
+                  multiple
+                  filterable
+                  remote
+                  clearable
+                  allow-create
+                  default-first-option
+                  :remote-method="(q: string) => fetchExifOptions('focal_length', q)"
+                  :loading="exifLoading.focal_length"
+                  placeholder="焦距（可多选，如 35mm）"
+                >
+                  <el-option v-for="opt in exifOptions.focal_length" :key="opt" :label="opt" :value="opt" />
+                </el-select>
+                <el-select
+                  v-model="exif.shutter"
+                  multiple
+                  filterable
+                  remote
+                  clearable
+                  allow-create
+                  default-first-option
+                  :remote-method="(q: string) => fetchExifOptions('shutter', q)"
+                  :loading="exifLoading.shutter"
+                  placeholder="快门（可多选，如 1/125s）"
+                >
+                  <el-option v-for="opt in exifOptions.shutter" :key="opt" :label="opt" :value="opt" />
+                </el-select>
               </div>
             </div>
 
@@ -528,14 +639,14 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 100vh; }
 .filter-card { background: rgba(255, 255, 255, 0.9); border: 1px solid #ffd6e8; border-radius: 12px; padding: 10px; box-shadow: 0 6px 14px rgba(255, 165, 199, 0.2); }
 .filter-card .label { margin: 0 0 6px; }
 .exif-card .exif-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-.exif-card input { width: 100%; border-radius: 10px; border: 1px solid rgba(255, 190, 210, 0.9); padding: 8px 10px; font-size: 12px; outline: none; background: #fff; }
-.exif-card input:focus { border-color: #ff8bb3; }
+.exif-card :deep(.el-select) { width: 100%; }
 .size-card .hint { margin-top: 6px; color: #b6788d; font-size: 12px; }
 
 .results { padding: 6px 18px 10px; flex: 1; display: flex; flex-direction: column; }
 .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; align-content: flex-start; flex: 1; }
-.gallery.masonry { column-count: 3; column-gap: 16px; }
-.gallery.masonry .photo { break-inside: avoid; margin-bottom: 16px; }
+.gallery.masonry { display: block; column-count: 3; column-gap: 16px; }
+.gallery.masonry .photo { display: inline-block; width: 100%; break-inside: avoid; margin-bottom: 16px; }
+.gallery.masonry .photo img { height: auto; }
 .gallery.large { display: flex; flex-direction: column; gap: 16px; }
 .gallery.large .photo { display: flex; min-height: 200px; }
 .gallery.large .photo img { width: 45%; height: 100%; object-fit: cover; }

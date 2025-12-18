@@ -1,10 +1,12 @@
 import os
+import threading
+import time
 from flask import Flask, jsonify
 from sqlalchemy import text, inspect
 from .config import Config
 from .extensions import bcrypt, db, jwt
 from .auth_routes import auth_bp
-from .images_routes import images_bp, _normalize_rel_path
+from .images_routes import images_bp, _normalize_rel_path, purge_expired_recycle
 from .tags_routes import tags_bp
 from .albums_routes import albums_bp  # 导入相册路由蓝图
 from .models import User, Image
@@ -45,6 +47,13 @@ def create_app(config_class: type[Config] = Config) -> Flask:
         _ensure_dirs(app)
         _ensure_default_admin()
         _fix_existing_paths()
+        # Purge once at startup so old recycle items disappear immediately.
+        try:
+            purge_expired_recycle()
+        except Exception:
+            app.logger.exception("startup recycle purge failed")
+
+    _start_recycle_purge_thread(app)
 
     return app
 
@@ -95,3 +104,29 @@ def _fix_existing_paths():
             updated += 1
     if updated:
         db.session.commit()
+
+
+def _start_recycle_purge_thread(app: Flask) -> None:
+    # Avoid duplicate background threads (e.g., Flask reloader or multiple create_app calls).
+    if app.extensions.get("recycle_purge_started"):
+        return
+    if app.debug and os.environ.get("WERKZEUG_RUN_MAIN") != "true":
+        return
+
+    app.extensions["recycle_purge_started"] = True
+
+    interval = int(app.config.get("RECYCLE_PURGE_INTERVAL_SECONDS", 3600))
+    retention_days = int(app.config.get("RECYCLE_RETENTION_DAYS", 7))
+    interval = max(60, interval)
+    retention_days = max(1, retention_days)
+
+    def _loop():
+        while True:
+            try:
+                with app.app_context():
+                    purge_expired_recycle(retention_days=retention_days)
+            except Exception:
+                app.logger.exception("recycle purge task failed")
+            time.sleep(interval)
+
+    threading.Thread(target=_loop, name="recycle-purge", daemon=True).start()

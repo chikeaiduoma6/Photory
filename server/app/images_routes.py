@@ -9,7 +9,7 @@ from datetime import datetime, date, time, timedelta
 from fractions import Fraction
 from typing import List
 
-import requests  # 可能用于其他场景，保留
+import requests  
 from flask import Blueprint, current_app, jsonify, request, send_file
 from flask_jwt_extended import get_jwt_identity, verify_jwt_in_request
 from pillow_heif import read_heif, register_heif_opener
@@ -870,7 +870,7 @@ def _ai_parse_date_range(text: str) -> tuple[datetime | None, datetime | None, s
         except Exception:
             return None
 
-    # 关键修正：一定要把 '-' 放在字符类最前或最后，避免被当成范围运算符
+    
     tokens = re.findall(r"\d{4}[-./年]\d{1,2}[-./月]\d{1,2}", text)
     dates = [_to_dt(t) for t in tokens]
     dates = [d for d in dates if d]
@@ -1028,7 +1028,7 @@ def _ai_infer_combine_logic(text: str) -> str:
     """推断组合方式，默认 AND，出现“或/或者/还是”时放宽为 OR"""
     if not text:
         return "and"
-    # 注意：Python 的 \b 在中文场景下常失效（中文也属于 \w），所以需要显式包含单字“或”
+    
     or_words = r"(或者是|或者|或是|或则|还是|或)"
     and_words = r"(并且|且|同时|以及|又)"
     tag_words = r"(标签|标记|包含|关键词|关键字|描述|说明|caption)"
@@ -1045,7 +1045,7 @@ def _ai_detect_logic_mode(text: str) -> str:
         return "auto"
     t = text
     # 更偏向“二选一”的用词
-    # 注意：单字“或”也要识别（例如“在风景相册里或包含落叶的图片”）
+    
     if re.search(r"(或者是|或者|或是|或则|还是|或)", t):
         return "or"
     # 更偏向“同时满足”的用词
@@ -1674,7 +1674,7 @@ def _remove_files(img: Image):
     except Exception:
         pass
     try:
-        # also remove exported/backup versions on disk
+        
         versions = img.versions.all() if hasattr(img.versions, "all") else (img.versions or [])
         for ver in versions:
             try:
@@ -1698,11 +1698,7 @@ def _remove_files(img: Image):
 
 
 def purge_expired_recycle(retention_days: int | None = None, batch_size: int = 200, user_id: int | None = None) -> int:
-    """
-    Permanently remove images that have stayed in recycle bin longer than retention_days.
-
-    This deletes both DB rows and files on disk (including version history files).
-    """
+    
     days = retention_days if retention_days is not None else int(current_app.config.get("RECYCLE_RETENTION_DAYS", 7))
     if days <= 0:
         return 0
@@ -1904,12 +1900,32 @@ def upload():
     folder = (request.form.get("folder") or "默认图库").strip() or "默认图库"
     visibility = request.form.get("visibility", "private")
     tag_names = [x.strip() for x in (request.form.get("tags") or "").split(",") if x.strip()]
+    album_ids_raw = request.form.getlist("album_ids")
+    if not album_ids_raw:
+        fallback_album_ids = request.form.get("album_ids") or request.form.get("albumIds") or request.form.get("album_id")
+        if fallback_album_ids:
+            album_ids_raw = [fallback_album_ids]
     custom_name = (request.form.get("name") or "").strip()
     description = (request.form.get("description") or "").strip()
     auto_ai_raw = request.form.get("auto_ai")
     auto_ai = True if auto_ai_raw is None else str(auto_ai_raw).lower() in ("1", "true", "yes", "on")
 
     _ensure_user_dirs(user_id)
+    album_ids: list[int] = []
+    seen_album_ids: set[int] = set()
+    for raw in album_ids_raw:
+        for part in str(raw).split(","):
+            try:
+                album_id = int(part)
+            except Exception:
+                continue
+            if album_id in seen_album_ids:
+                continue
+            seen_album_ids.add(album_id)
+            album_ids.append(album_id)
+    albums: list[Album] = []
+    if album_ids:
+        albums = Album.query.filter(Album.user_id == user_id, Album.id.in_(album_ids)).all()
 
     saved: list[Image] = []
     try:
@@ -2002,6 +2018,9 @@ def upload():
                 folder=folder,
             )
             image_row.tags = _get_or_create_tags(tag_names, user_id=user_id)
+            if albums:
+                for album in albums:
+                    image_row.albums.append(album)
             db.session.add(image_row)
             saved.append(image_row)
 
@@ -2385,7 +2404,7 @@ def image_quota():
 @images_bp.get("/recycle")
 def list_recycle():
     user_id = _current_user_id()
-    # Ensure expired items are removed even if the background task is not running.
+    
     purge_expired_recycle(user_id=user_id)
     page = _positive_int(request.args.get("page"), 1)
     page_size = _positive_int(request.args.get("page_size"), 12, 50)

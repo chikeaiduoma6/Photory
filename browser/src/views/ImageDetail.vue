@@ -12,6 +12,11 @@ const router = useRouter()
 const authStore = useAuthStore()
 
 const palette = ['#ff9db8', '#8ed0ff', '#ffd27f', '#9dd0a5', '#c3a0ff', '#f7a3ff']
+interface TagOption {
+  id: number
+  name: string
+  color?: string
+}
 
 const apiBase = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '')
 const withBase = (path: string) => (!path ? '' : path.startsWith('http') ? path : `${apiBase}${path}`)
@@ -23,6 +28,9 @@ const aiTags = ref<string[]>([])
 const aiDescription = ref('')
 const newTag = ref('')
 const newTagColor = ref(palette[0])
+const tagOptions = ref<TagOption[]>([])
+const selectedTagNames = ref<string[]>([])
+const loadingTags = ref(false)
 
 const editName = ref('')
 const editDescription = ref('')
@@ -43,6 +51,7 @@ const thumbUrl = computed(() =>
 )
 const heroUrl = computed(() => imageUrl.value || thumbUrl.value)
 const customTags = computed(() => detail.value?.tag_objects || [])
+const existingTagNames = computed(() => customTags.value.map((t: any) => t.name))
 const exifRaw = computed(() => detail.value?.exif_raw || {})
 const isFeatured = computed(() => !!detail.value?.is_featured)
 
@@ -115,6 +124,45 @@ async function fetchDetail() {
   }
 }
 
+async function fetchTags() {
+  loadingTags.value = true
+  try {
+    const res = await axios.get('/api/v1/tags', { params: { page: 1, page_size: 200 } })
+    tagOptions.value = res.data.items || []
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.message || '获取标签列表失败')
+    tagOptions.value = []
+  } finally {
+    loadingTags.value = false
+  }
+}
+
+function upsertTagOptions(items: any[]) {
+  if (!Array.isArray(items)) return
+  for (const item of items) {
+    if (!item?.name) continue
+    const idx = tagOptions.value.findIndex(t => t.name === item.name)
+    const color = item.color ?? tagOptions.value[idx]?.color
+    if (idx >= 0) {
+      tagOptions.value[idx] = { ...tagOptions.value[idx], id: item.id ?? tagOptions.value[idx].id, color }
+    } else {
+      tagOptions.value.unshift({ id: item.id || 0, name: item.name, color })
+    }
+  }
+}
+
+function buildTagPayload(extra: Array<{ name: string; color?: string }>) {
+  const merged = new Map<string, string | undefined>()
+  for (const t of customTags.value || []) {
+    if (t?.name) merged.set(t.name, t.color)
+  }
+  for (const t of extra) {
+    if (!t?.name) continue
+    merged.set(t.name, t.color)
+  }
+  return Array.from(merged.entries()).map(([name, color]) => (color ? { name, color } : { name }))
+}
+
 
 
 function normalizeColor(raw?: string | null, idx = 0, name = '') {
@@ -135,15 +183,35 @@ async function addTag() {
   if (!tag) return
   try {
     const res = await axios.post(`/api/v1/images/${route.params.id}/tags`, {
-      tags: [...(customTags.value || []), { name: tag, color: newTagColor.value }],
+      tags: buildTagPayload([{ name: tag, color: newTagColor.value }]),
     })
     detail.value.tags = res.data.tags
     detail.value.tag_objects = res.data.tag_objects || []
+    upsertTagOptions(res.data.tag_objects || [])
     newTag.value = ''
     newTagColor.value = palette[Math.floor(Math.random() * palette.length)]
     ElMessage.success('标签已更新')
   } catch (err: any) {
     ElMessage.error(err?.response?.data?.message || '添加标签失败')
+  }
+}
+
+async function addSelectedTags() {
+  const extras = selectedTagNames.value
+    .filter(name => name && !existingTagNames.value.includes(name))
+    .map(name => ({ name, color: tagOptions.value.find(t => t.name === name)?.color }))
+  if (!extras.length) return
+  try {
+    const res = await axios.post(`/api/v1/images/${route.params.id}/tags`, {
+      tags: buildTagPayload(extras),
+    })
+    detail.value.tags = res.data.tags
+    detail.value.tag_objects = res.data.tag_objects || []
+    upsertTagOptions(res.data.tag_objects || [])
+    selectedTagNames.value = []
+    ElMessage.success('标签已更新')
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.message || '更新标签失败')
   }
 }
 
@@ -237,7 +305,10 @@ async function softDelete() {
   }
 }
 
-onMounted(fetchDetail)
+onMounted(() => {
+  fetchDetail()
+  fetchTags()
+})
 </script>
 
 <template>
@@ -346,6 +417,33 @@ onMounted(fetchDetail)
                   <span class="dot" :style="{ background: normalizeColor(t.color, idx, t.name) }"></span>{{ t.name }} ×
                 </span>
                 <span v-if="!customTags?.length" class="muted">暂无自定义标签</span>
+              </div>
+              <div class="tag-select">
+                <el-select
+                  v-model="selectedTagNames"
+                  class="tag-select-input"
+                  multiple
+                  filterable
+                  clearable
+                  :loading="loadingTags"
+                  placeholder="选择已有标签"
+                >
+                  <el-option
+                    v-for="(tag, idx) in tagOptions"
+                    :key="tag.id"
+                    :label="tag.name"
+                    :value="tag.name"
+                    :disabled="existingTagNames.includes(tag.name)"
+                  >
+                    <span class="tag-option">
+                      <span class="dot" :style="{ background: normalizeColor(tag.color, idx, tag.name) }"></span>
+                      {{ tag.name }}
+                    </span>
+                  </el-option>
+                </el-select>
+                <button class="pill-btn mini ghost" :disabled="!selectedTagNames.length" @click="addSelectedTags">
+                  新增已选
+                </button>
               </div>
               <div class="tag-input">
                 <input v-model="newTag" placeholder="输入新标签后回车" @keyup.enter="addTag" />
@@ -470,6 +568,12 @@ main { flex: 1; display: flex; flex-direction: column; }
 .tag.alt { background: #ffeef5; }
 .tag.ghost { background: #f4f4f4; color: #7a7a7a; cursor: default; border: none; }
 .tag .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.tag-select { display: flex; gap: 8px; margin-top: 6px; align-items: center; }
+.tag-select-input { flex: 1; }
+.tag-option { display: inline-flex; align-items: center; gap: 6px; }
+.tag-option .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+:deep(.tag-select-input .el-select__wrapper) { border-radius: 12px; border: 1px solid rgba(255, 190, 210, 0.9); background: #fff; box-shadow: none; }
+:deep(.tag-select-input .el-select__placeholder) { color: #b57a90; }
 .tag-input { display: flex; gap: 8px; margin-top: 6px; align-items: center; }
 .tag-input input { flex: 1; border-radius: 12px; border: 1px solid rgba(255, 190, 210, 0.9); padding: 6px 10px; font-size: 13px; outline: none; }
 .color-picker { width: 44px; height: 32px; padding: 0; border: 1px solid rgba(255, 190, 210, 0.9); border-radius: 8px; background: #fff; }
@@ -522,10 +626,11 @@ footer { text-align: center; font-size: 12px; color: #b57a90; padding: 12px 0 16
   .meta-actions { justify-content: flex-start; }
 }
 @media (max-width: 640px) {
-  .tag-input { flex-direction: column; align-items: stretch; }
-  .tag-input input { width: 100%; }
+  .tag-select, .tag-input { flex-direction: column; align-items: stretch; }
+  .tag-select-input, .tag-input input { width: 100%; }
   .color-picker { width: 100%; max-width: 120px; }
   .panel { padding: 12px; }
   .exif-raw .exif-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
 }
 </style>
+

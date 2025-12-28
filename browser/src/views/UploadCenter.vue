@@ -26,6 +26,11 @@ interface TagItem {
   name: string
   color: string
 }
+interface TagOption {
+  id: number
+  name: string
+  color?: string
+}
 interface AlbumOption {
   id: number
   title: string
@@ -61,11 +66,14 @@ watch(
 )
 
 const albumOptions = ref<AlbumOption[]>([])
-const selectedAlbumId = ref<number | ''>('')
+const selectedAlbumIds = ref<number[]>([])
 const loadingAlbums = ref(false)
 const newAlbumTitle = ref('')
 const visibility = ref<'public' | 'private'>('private')
 const tagList = ref<TagItem[]>([])
+const tagOptions = ref<TagOption[]>([])
+const selectedTagNames = ref<string[]>([])
+const loadingTags = ref(false)
 const newTagName = ref('')
 const newTagColor = ref('#ff8bb3')
 const customName = ref('')
@@ -77,6 +85,7 @@ const uploadItems = ref<UploadItem[]>([])
 const fileInputRef = ref<HTMLInputElement | null>(null)
 const folderInputRef = ref<HTMLInputElement | null>(null)
 const displayItems = computed(() => uploadItems.value)
+const tagNameSet = computed(() => new Set(tagList.value.map(t => t.name)))
 
 type SupportedExt = 'jpg' | 'jpeg' | 'png' | 'gif' | 'webp' | 'bmp' | 'heic' | 'heif'
 const supportedExts: SupportedExt[] = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'heic', 'heif']
@@ -190,6 +199,16 @@ function removeTag(name: string) {
   tagList.value = tagList.value.filter(t => t.name !== name)
 }
 
+function addSelectedTags() {
+  const next = selectedTagNames.value.filter(name => name && !tagNameSet.value.has(name))
+  if (!next.length) return
+  for (const name of next) {
+    const matched = tagOptions.value.find(t => t.name === name)
+    tagList.value.push({ name, color: matched?.color || '#ff8bb3' })
+  }
+  selectedTagNames.value = []
+}
+
 async function fetchAlbums() {
   loadingAlbums.value = true
   try {
@@ -200,6 +219,19 @@ async function fetchAlbums() {
     albumOptions.value = []
   } finally {
     loadingAlbums.value = false
+  }
+}
+
+async function fetchTags() {
+  loadingTags.value = true
+  try {
+    const res = await axios.get('/api/v1/tags', { params: { page: 1, page_size: 200 } })
+    tagOptions.value = res.data.items || []
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.message || '获取标签列表失败')
+    tagOptions.value = []
+  } finally {
+    loadingTags.value = false
   }
 }
 
@@ -214,7 +246,9 @@ async function createAlbum() {
     const created = res.data.album
     if (created) {
       albumOptions.value.unshift(created)
-      selectedAlbumId.value = created.id
+      if (!selectedAlbumIds.value.includes(created.id)) {
+        selectedAlbumIds.value = [...selectedAlbumIds.value, created.id]
+      }
     }
     ElMessage.success('相册创建成功')
     newAlbumTitle.value = ''
@@ -233,8 +267,8 @@ async function uploadOne(item: UploadItem) {
   const form = new FormData()
   form.append('file', item.raw)
   form.append('folder', '默认图库')
-  if (selectedAlbumId.value) {
-    form.append('album_id', String(selectedAlbumId.value))
+  if (selectedAlbumIds.value.length) {
+    selectedAlbumIds.value.forEach(id => form.append('album_ids', String(id)))
   }
   form.append('visibility', visibility.value)
   form.append('tags', tagList.value.map(t => t.name).join(','))
@@ -357,16 +391,21 @@ function logout() {
 }
 
 onMounted(() => {
-  if (authStore.token) fetchAlbums()
+  if (authStore.token) {
+    fetchAlbums()
+    fetchTags()
+  }
 })
 watch(
   () => authStore.token,
   token => {
     if (token) {
       fetchAlbums()
+      fetchTags()
     } else {
       albumOptions.value = []
-      selectedAlbumId.value = ''
+      selectedAlbumIds.value = []
+      tagOptions.value = []
     }
   }
 )
@@ -488,12 +527,17 @@ watch(
 
           <div class="setting-item">
             <label>目标相册</label>
-            <select v-model="selectedAlbumId">
-              <option value="">无（不加入相册）</option>
-              <option v-for="album in albumOptions" :key="album.id" :value="album.id">
-                {{ album.title }}
-              </option>
-            </select>
+            <el-select
+              v-model="selectedAlbumIds"
+              class="album-select"
+              multiple
+              filterable
+              clearable
+              :loading="loadingAlbums"
+              placeholder="选择相册（可多选）"
+            >
+              <el-option v-for="album in albumOptions" :key="album.id" :label="album.title" :value="album.id" />
+            </el-select>
             <div class="album-inline-create">
               <input v-model="newAlbumTitle" placeholder="新相册名称" />
               <button class="pill add-album-btn" :disabled="loadingAlbums" @click="createAlbum">+ 新建相册</button>
@@ -515,6 +559,33 @@ watch(
               <input v-model="newTagName" placeholder="输入标签名称" />
               <input type="color" v-model="newTagColor" class="color-picker" />
               <button class="pill add-tag-btn" @click="addTagChip">+ 新增标签</button>
+            </div>
+            <div class="tag-select-row">
+              <el-select
+                v-model="selectedTagNames"
+                class="tag-select"
+                multiple
+                filterable
+                clearable
+                :loading="loadingTags"
+                placeholder="选择已有标签"
+              >
+                <el-option
+                  v-for="tag in tagOptions"
+                  :key="tag.id"
+                  :label="tag.name"
+                  :value="tag.name"
+                  :disabled="tagNameSet.has(tag.name)"
+                >
+                  <span class="tag-option">
+                    <span class="dot" :style="{ background: tag.color || '#ff8bb3' }"></span>
+                    {{ tag.name }}
+                  </span>
+                </el-option>
+              </el-select>
+              <button class="pill add-tag-btn" :disabled="!selectedTagNames.length" @click="addSelectedTags">
+                + 新增已选
+              </button>
             </div>
             <div class="tags-row chips">
               <span
@@ -612,7 +683,7 @@ watch(
 </template>
 
 <style scoped>
-/* 样式保持原有基础，仅新增 textarea 宽度自适应 */
+
 .dashboard {
   --pink-main: #ff6fa0;
   --pink-soft: #ffeef5;
@@ -658,12 +729,27 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 100vh; paddin
 .setting-item select, .setting-item input, .setting-item textarea { width: 100%; border-radius: 14px; border: 1px solid rgba(255, 190, 210, 0.9); padding: 6px 10px; font-size: 13px; outline: none; background: #fff; box-sizing: border-box; }
 .setting-item textarea { min-height: 70px; resize: vertical; }
 .setting-item select:focus, .setting-item input:focus, .setting-item textarea:focus { border-color: #ff8bb3; }
+.album-select, .tag-select { width: 100%; }
+:deep(.album-select .el-select__wrapper),
+:deep(.tag-select .el-select__wrapper) {
+  border-radius: 14px;
+  border: 1px solid rgba(255, 190, 210, 0.9);
+  background: #fff;
+  box-shadow: none;
+}
+:deep(.album-select .el-select__placeholder),
+:deep(.tag-select .el-select__placeholder) {
+  color: #b57a90;
+}
 .radio-group { display: flex; gap: 8px; }
 .pill { border-radius: 999px; border: 1px solid rgba(255, 180, 205, 0.9); background: rgba(255, 255, 255, 0.9); font-size: 12px; padding: 4px 12px; cursor: pointer; }
 .pill.active { background: linear-gradient(135deg, #ff8bb3, #ff6fa0); color: #fff; }
 .tag-create { display: flex; align-items: center; gap: 8px; }
 .tag-create .color-picker { width: 46px; height: 36px; padding: 4px; border-radius: 12px; border: 1px solid rgba(255, 190, 210, 0.9); background: #fff; cursor: pointer; }
 .add-tag-btn { border: none; color: #b05f7a; }
+.tag-select-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; margin-top: 8px; }
+.tag-option { display: inline-flex; align-items: center; gap: 6px; }
+.tag-option .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
 .album-inline-create { margin-top: 8px; display: flex; gap: 8px; align-items: center; }
 .album-inline-create input { flex: 1; padding: 10px 12px; border-radius: 12px; border: 1px solid #ffd1e2; background: #fff; color: #ff4c8a; }
 .add-album-btn { white-space: nowrap; }
@@ -723,5 +809,15 @@ footer { text-align: center; font-size: 12px; color: #b57a90; }
 .drawer .brand p { margin: 0; font-size: 12px; color: #b6788d; }
 @media (max-width: 1100px) { .upload-layout { grid-template-columns: 1.5fr 1fr; } }
 @media (max-width: 900px) { .sidebar { display: none; } .mobile-topbar { display: flex; } .topbar { padding: 12px 16px; } .upload-layout { grid-template-columns: 1fr; padding-inline: 16px; } .upload-queue-section { padding-inline: 16px; } }
-@media (max-width: 640px) { .select-btn, .start-upload-btn { width: 100%; } .drop-inner h2 { font-size: 18px; } .upload-drop-card { padding: 20px 16px; } .upload-settings-card { padding: 16px; } .topbar .right { display: none; } .upload-item { flex-direction: column; align-items: flex-start; } .queue-actions { width: 100%; justify-content: flex-end; } }
+@media (max-width: 640px) {
+  .select-btn, .start-upload-btn { width: 100%; }
+  .drop-inner h2 { font-size: 18px; }
+  .upload-drop-card { padding: 20px 16px; }
+  .upload-settings-card { padding: 16px; }
+  .topbar .right { display: none; }
+  .upload-item { flex-direction: column; align-items: flex-start; }
+  .queue-actions { width: 100%; justify-content: flex-end; }
+  .tag-select-row { grid-template-columns: 1fr; }
+}
 </style>
+

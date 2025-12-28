@@ -286,7 +286,7 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 100vh; }
 .drawer .brand .icon { background: linear-gradient(135deg, #ff8bb3, #ff6fa0); width: 32px; height: 32px; border-radius: 10px; color: #fff; display: flex; align-items: center; justify-content: center; }
 .drawer .brand h1 { margin: 0; font-size: 16px; color: #ff4c8a;}
 .drawer .brand p { margin: 0; font-size: 12px; color: #b6788d;}
-/* ---- AI Workspace 核心内容 ---- */
+
 .ai-main-card { margin: 24px 18px 12px; background: rgba(255,255,255,0.98); border-radius: 20px; box-shadow: 0 14px 32px rgba(255,165,199,0.16); padding: 16px 18px; display: flex; flex-direction: column; gap: 16px;}
 .quick-prompt-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 5px;}
 .chip { padding: 6px 10px; border-radius: 999px; background: #fff; border: 1px solid #ffd0e2; color: #c14e7a; cursor: pointer; margin-right: 4px;}

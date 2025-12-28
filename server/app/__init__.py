@@ -47,7 +47,7 @@ def create_app(config_class: type[Config] = Config) -> Flask:
         _ensure_dirs(app)
         _ensure_default_admin()
         _fix_existing_paths()
-        # Purge once at startup so old recycle items disappear immediately.
+        
         try:
             purge_expired_recycle()
         except Exception:
@@ -61,7 +61,7 @@ def create_app(config_class: type[Config] = Config) -> Flask:
 def _ensure_columns():
     """
     自动补充 images 表缺失的列（description, exif_json）。
-    已存在则跳过，确保旧库也可无感升级。
+    
     """
     try:
         insp = inspect(db.engine)
@@ -107,7 +107,7 @@ def _fix_existing_paths():
 
 
 def _start_recycle_purge_thread(app: Flask) -> None:
-    # Avoid duplicate background threads (e.g., Flask reloader or multiple create_app calls).
+    
     if app.extensions.get("recycle_purge_started"):
         return
     if app.debug and os.environ.get("WERKZEUG_RUN_MAIN") != "true":

@@ -134,6 +134,20 @@ const imageRatio = computed(() => {
   return w / h
 })
 
+const sharpenFilterId = 'pm-sharpen-filter'
+const sharpenValue = computed(() => {
+  const raw = Number(editorState.value.adjustments.sharpen || 0)
+  if (!Number.isFinite(raw)) return 0
+  return Math.max(0, Math.min(120, raw))
+})
+const sharpenKernel = computed(() => {
+  const strength = Math.min(1.2, sharpenValue.value / 100)
+  const s = Number(strength.toFixed(3))
+  const neg = s ? -s : 0
+  const center = Number((1 + 4 * s).toFixed(3))
+  return `0 ${neg} 0 ${neg} ${center} ${neg} 0 ${neg} 0`
+})
+
 const filterCss = computed(() => {
   const a = editorState.value.adjustments
   const brightness = 1 + (a.brightness + a.exposure * 0.6) / 100
@@ -141,7 +155,17 @@ const filterCss = computed(() => {
   const saturation = 1 + a.saturation / 100
   const warmth = 1 + a.temperature / 200
   const hue = a.tint
-  return `brightness(${brightness}) contrast(${contrast}) saturate(${saturation * warmth}) hue-rotate(${hue}deg) sepia(${Math.max(0, a.temperature) / 140})`
+  const filters = [
+    `brightness(${brightness})`,
+    `contrast(${contrast})`,
+    `saturate(${saturation * warmth})`,
+    `hue-rotate(${hue}deg)`,
+    `sepia(${Math.max(0, a.temperature) / 140})`,
+  ]
+  if (sharpenValue.value > 0) {
+    filters.push(`url(#${sharpenFilterId})`)
+  }
+  return filters.join(' ')
 })
 
 function clamp01Unit(v: number) {
@@ -745,6 +769,11 @@ function toggleAlbum(id: number) {
           </div>
 
           <div class="preview-box">
+            <svg class="filter-defs" aria-hidden="true">
+              <filter :id="sharpenFilterId" x="-20%" y="-20%" width="140%" height="140%">
+                <feConvolveMatrix :kernelMatrix="sharpenKernel" edgeMode="duplicate" />
+              </filter>
+            </svg>
             <div
               class="image-stage"
               ref="stageRef"
@@ -992,7 +1021,8 @@ main { flex: 1; display: flex; flex-direction: column; }
 .muted { color: #b57a90; font-size: 12px; }
 .view-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
 
-.preview-box { margin-top: 12px; padding: 12px; background: #fdf6fa; border-radius: 18px; }
+.preview-box { position: relative; margin-top: 12px; padding: 12px; background: #fdf6fa; border-radius: 18px; }
+.filter-defs { position: absolute; width: 0; height: 0; }
 .image-stage { position: relative; border-radius: 16px; background: radial-gradient(circle at 30% 20%, rgba(255, 214, 230, 0.4), rgba(255, 231, 240, 0.95)); height: 520px; display: flex; align-items: center; justify-content: center; overflow: hidden; user-select: none; touch-action: none; cursor: grab; }
 .image-stage:active { cursor: grabbing; }
 .edit-viewport { position: absolute; border-radius: 14px; overflow: hidden; background: #f6e9f1; box-shadow: inset 0 0 0 1px rgba(255, 180, 205, 0.65); }

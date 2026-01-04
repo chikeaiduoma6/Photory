@@ -7,6 +7,7 @@ import { useAuthStore } from '@/stores/auth'
 import { usePreferencesStore } from '@/stores/preferences'
 import { getNavLinks } from '@/utils/navLinks'
 import { useLocale } from '@/composables/useLocale'
+import heic2any from 'heic2any'
 
 type UploadStatus = 'waiting' | 'uploading' | 'paused' | 'stopped' | 'success' | 'error'
 interface UploadItem {
@@ -97,6 +98,44 @@ function isSupportedImage(file: File) {
   return !!ext && supportedExts.includes(ext as SupportedExt)
 }
 
+function getFileExt(file: File) {
+  const name = (file.name || '').toLowerCase()
+  return name.includes('.') ? name.split('.').pop() || '' : ''
+}
+
+function isHeicFile(file: File) {
+  const ext = getFileExt(file)
+  const mime = (file.type || '').toLowerCase()
+  return ext === 'heic' || ext === 'heif' || mime.includes('heic') || mime.includes('heif')
+}
+
+async function createPreviewUrl(file: File): Promise<string | undefined> {
+  if (typeof URL === 'undefined') return undefined
+  if (!isHeicFile(file)) return URL.createObjectURL(file)
+  try {
+    const converted = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.82 })
+    const blob = (Array.isArray(converted) ? converted[0] : converted) as Blob | undefined
+    if (!blob) return undefined
+    return URL.createObjectURL(blob)
+  } catch {
+    return undefined
+  }
+}
+
+async function resolvePreviewUrl(file: File, itemId: number) {
+  const previewUrl = await createPreviewUrl(file)
+  if (!previewUrl) return
+  const target = uploadItems.value.find(i => i.id === itemId)
+  if (!target) {
+    try { URL.revokeObjectURL(previewUrl) } catch { /* ignore */ }
+    return
+  }
+  if (target.previewUrl && target.previewUrl !== previewUrl) {
+    try { URL.revokeObjectURL(target.previewUrl) } catch { /* ignore */ }
+  }
+  target.previewUrl = previewUrl
+}
+
 function enqueueFiles(files: File[]) {
   const good: File[] = []
   let rejected = 0
@@ -107,16 +146,18 @@ function enqueueFiles(files: File[]) {
   if (rejected) ElMessage.warning(text(`已跳过 ${rejected} 个非支持格式文件`, `Skipped ${rejected} unsupported file(s)`))
   const now = Date.now()
   for (const file of good) {
-    uploadItems.value.push({
+    const item: UploadItem = {
       id: now + Math.random(),
       name: file.name,
       size: file.size,
       status: 'waiting',
       progress: 0,
       raw: file,
-      previewUrl: typeof URL !== 'undefined' ? URL.createObjectURL(file) : undefined,
+      previewUrl: undefined,
       addedAt: Date.now(),
-    })
+    }
+    uploadItems.value.push(item)
+    void resolvePreviewUrl(file, item.id)
   }
 }
 
@@ -820,4 +861,3 @@ footer { text-align: center; font-size: 12px; color: #b57a90; }
   .tag-select-row { grid-template-columns: 1fr; }
 }
 </style>
-

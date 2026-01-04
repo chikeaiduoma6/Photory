@@ -13,7 +13,7 @@ import requests
 from flask import Blueprint, current_app, jsonify, request, send_file
 from flask_jwt_extended import get_jwt_identity, verify_jwt_in_request
 from pillow_heif import read_heif, register_heif_opener
-from PIL import ExifTags, Image as PILImage, ImageEnhance, ImageOps
+from PIL import ExifTags, Image as PILImage, ImageEnhance, ImageOps, ImageFilter
 from sqlalchemy import func, or_, and_, exists, cast, String
 from openai import OpenAI
 
@@ -440,9 +440,13 @@ def _extract_exif(pil_img: PILImage.Image, exif_bytes: bytes | None = None, xmp_
 
 def _save_thumb(src_path: str, dest_path: str, size=(400, 400)) -> None:
     with PILImage.open(src_path) as img:
+        icc_profile = img.info.get("icc_profile")
         img = ImageOps.exif_transpose(img)
         img.thumbnail(size)
-        img.save(dest_path, format="JPEG", quality=85)
+        save_kwargs = {"format": "JPEG", "quality": 85}
+        if icc_profile:
+            save_kwargs["icc_profile"] = icc_profile
+        img.save(dest_path, **save_kwargs)
 
 
 def _sanitize_color(raw: str | None) -> str | None:
@@ -1188,6 +1192,14 @@ def _nl_extract_keyword_groups(text: str, exclude_terms: set[str] | None = None)
     exclude_terms = {t.strip() for t in (exclude_terms or set()) if (t or "").strip()}
 
     t = str(text)
+    if not re.search(r"(或者是|或者|或是|或则|还是|或|\bor\b|\|)", t, flags=re.IGNORECASE) and not re.search(
+        r"(并且|而且|同时|以及|和|且|\band\b|&)", t, flags=re.IGNORECASE
+    ):
+        compact = re.sub(r"\s+", "", t)
+        compact = re.sub(r"[，。,.；;:：!！?？()（）\[\]{}《》<>·•]+", "", compact)
+        if re.fullmatch(r"[\u4e00-\u9fff]{2,20}", compact or ""):
+            if compact not in exclude_terms and not _is_noise_keyword(compact):
+                return [[compact]]
     # 标点归一化为空格，避免粘连
     t = re.sub(r"[，。,.；;:：!！?？()（）\\[\\]{}《》<>]+", " ", t)
     # 连接词归一化
@@ -1197,6 +1209,35 @@ def _nl_extract_keyword_groups(text: str, exclude_terms: set[str] | None = None)
     raw_tokens = [x.strip() for x in t.split() if x.strip()]
     if not raw_tokens:
         return []
+
+    def _is_single_cjk(tok: str) -> bool:
+        return len(tok) == 1 and bool(re.match(r"^[\u4e00-\u9fff]$", tok))
+
+    merged_tokens: list[str] = []
+    buffer = ""
+    for tok in raw_tokens:
+        if tok in {"__OR__", "__AND__"}:
+            if buffer:
+                merged_tokens.append(buffer)
+                buffer = ""
+            merged_tokens.append(tok)
+            continue
+        cleaned = tok.strip("“”\"'‘’")
+        if cleaned.startswith("#"):
+            cleaned = cleaned[1:]
+        cleaned = cleaned.strip()
+        if not cleaned:
+            continue
+        if _is_single_cjk(cleaned):
+            buffer += cleaned
+            continue
+        if buffer:
+            merged_tokens.append(buffer)
+            buffer = ""
+        merged_tokens.append(cleaned)
+    if buffer:
+        merged_tokens.append(buffer)
+    raw_tokens = merged_tokens
 
     # 结构化/停用词（避免被当成关键词导致排空）
     stop_tokens = {
@@ -1744,6 +1785,49 @@ def _center_box_by_ratio(ratio: float) -> dict:
     return {"x": x, "y": y, "w": w, "h": h}
 
 
+def _apply_sepia(img: PILImage.Image, amount: float) -> PILImage.Image:
+    if amount <= 0:
+        return img
+    amt = max(0.0, min(1.0, float(amount)))
+    inv = 1.0 - amt
+    matrix = [
+        0.393 * amt + inv, 0.769 * amt, 0.189 * amt, 0,
+        0.349 * amt, 0.686 * amt + inv, 0.168 * amt, 0,
+        0.272 * amt, 0.534 * amt, 0.131 * amt + inv, 0,
+    ]
+    return img.convert("RGB", matrix)
+
+
+def _apply_hue_rotate(img: PILImage.Image, degrees: float) -> PILImage.Image:
+    try:
+        deg = float(degrees or 0)
+    except Exception:
+        return img
+    if deg % 360 == 0:
+        return img
+    hsv = img.convert("HSV")
+    h, s, v = hsv.split()
+    shift = int(round((deg / 360.0) * 255)) % 256
+    h = h.point(lambda x: (x + shift) % 256)
+    return PILImage.merge("HSV", (h, s, v)).convert("RGB")
+
+
+def _apply_sharpen(img: PILImage.Image, amount: float) -> PILImage.Image:
+    try:
+        val = float(amount or 0)
+    except Exception:
+        return img
+    if val <= 0:
+        return img
+    strength = min(1.2, val / 100.0)
+    kernel = [
+        0, -strength, 0,
+        -strength, 1 + 4 * strength, -strength,
+        0, -strength, 0,
+    ]
+    return img.filter(ImageFilter.Kernel((3, 3), kernel, scale=None, offset=0))
+
+
 def _apply_edits(pil: PILImage.Image, payload: dict) -> PILImage.Image:
     rotation = payload.get("rotation", 0) or 0
     zoom = payload.get("zoom", 1) or 1
@@ -1868,20 +1952,38 @@ def _apply_edits(pil: PILImage.Image, payload: dict) -> PILImage.Image:
     bright = float(adjustments.get("brightness") or 0)
     exposure = float(adjustments.get("exposure") or 0)
     contrast = float(adjustments.get("contrast") or 0)
+    highlights = float(adjustments.get("highlights") or 0)
+    shadows = float(adjustments.get("shadows") or 0)
     saturation = float(adjustments.get("saturation") or 0)
+    temperature = float(adjustments.get("temperature") or 0)
+    tint = float(adjustments.get("tint") or 0)
+    sharpen = float(adjustments.get("sharpen") or 0)
 
-    if bright:
+    brightness_factor = 1 + (bright + exposure * 0.6) / 100
+    if brightness_factor != 1:
         enhancer = ImageEnhance.Brightness(img)
-        img = enhancer.enhance(1 + bright / 100)
-    if exposure:
-        enhancer = ImageEnhance.Brightness(img)
-        img = enhancer.enhance(1 + exposure / 50)
-    if contrast:
+        img = enhancer.enhance(max(0.0, brightness_factor))
+
+    contrast_total = contrast + highlights * 0.35 - shadows * 0.25
+    if contrast_total:
         enhancer = ImageEnhance.Contrast(img)
-        img = enhancer.enhance(1 + contrast / 100)
-    if saturation:
+        img = enhancer.enhance(max(0.0, 1 + contrast_total / 100))
+
+    saturation_factor = 1 + saturation / 100
+    warmth_factor = 1 + temperature / 200
+    color_factor = saturation_factor * warmth_factor
+    if saturation or temperature:
         enhancer = ImageEnhance.Color(img)
-        img = enhancer.enhance(1 + saturation / 100)
+        img = enhancer.enhance(max(0.0, color_factor))
+
+    if tint:
+        img = _apply_hue_rotate(img, tint)
+
+    if temperature > 0:
+        img = _apply_sepia(img, temperature / 140.0)
+
+    if sharpen:
+        img = _apply_sharpen(img, sharpen)
 
     return img
 
@@ -2196,13 +2298,19 @@ def search_images():
             # 用户确实输入了 keyword，但内容全是连接词/结构化触发词时，不应退化为“返回全部”
             query = query.filter(Image.id == -1)
 
-    for tag_name in tag_names:
-        query = query.filter(Image.tags.any(Tag.name == tag_name))
+    if tag_names:
+        tag_conds = [Image.tags.any(Tag.name == tag_name) for tag_name in tag_names if tag_name]
+        if tag_conds:
+            query = query.filter(or_(*tag_conds))
 
-    for album_title in album_titles:
-        query = query.filter(
+    if album_titles:
+        album_conds = [
             Image.albums.any(and_(Album.user_id == user_id, Album.title == album_title))
-        )
+            for album_title in album_titles
+            if album_title
+        ]
+        if album_conds:
+            query = query.filter(or_(*album_conds))
 
     if format_list:
         format_aliases = {
@@ -2561,6 +2669,7 @@ def export_image(image_id: int):
 
     try:
         with PILImage.open(disk_path) as src:
+            icc_profile = src.info.get("icc_profile")
             src = ImageOps.exif_transpose(src)
             exif_bytes = src.info.get("exif")
             edited = _apply_edits(src, payload)
@@ -2585,6 +2694,8 @@ def export_image(image_id: int):
         if fmt == "JPEG" and exif_bytes:
             save_kwargs["exif"] = exif_bytes
             save_kwargs["quality"] = 95
+        if icc_profile:
+            save_kwargs["icc_profile"] = icc_profile
         pil_img.save(dest_disk, **save_kwargs)
 
     def _save_new_thumb(src_disk: str, rel_hint: str | None = None) -> str:
@@ -2908,37 +3019,17 @@ def ai_chat_search():
         current_app.logger.exception("ai search failed")
         return jsonify({"message": "AI 检索失败", "error": str(exc)}), 500
 
-    # 回复：优先调用大模型总结；失败时用本地兜底，保证可用性
-    reply = ""
-    try:
-        reply_prompt = (
-            "你是图片管家，根据候选图片用中文简短回复。\n"
-            "规则：\n"
-            "1) 只能引用候选里的图片 id 和 name，不要编造。\n"
-            "2) 如果候选非空：必须至少列出 1 张（最多 5 张），不要说“没有/未找到”。\n"
-            "3) 如果候选为空：才可以说没有找到。\n"
-            f"用户问：{user_text}\n候选数量：{len(results)}\n候选：{json.dumps(results, ensure_ascii=False)}"
-        )
-        reply = _qwen_chat(
-            [
-                {"role": "system", "content": "你是照片助理，口吻简洁、友好。"},
-                {"role": "user", "content": reply_prompt},
-            ]
-        )
-    except Exception:
-        current_app.logger.exception("ai reply generation failed")
-        reply = ""
-
-    if not reply:
-        if not results:
-            reply = "没有找到相关图片。"
+    # 回复：仅输出提示语，避免与前端图片数量不一致
+    album_title = _ai_parse_album(user_text)
+    if results:
+        if album_title:
+            reply = f"相册“{album_title}”中的图片有："
         else:
-            top = results[: min(5, len(results))]
-            reply = "我找到了这些图片：" + "，".join([f"{it.get('id')} {it.get('name')}" for it in top if it.get("id")])
-
-    # 兜底：候选非空但模型仍回复“没有”，避免前端出现“有图但说没图”的矛盾体验
-    if results and re.search(r"(没有|未找到|找不到|无相关)", reply or ""):
-        top = results[: min(5, len(results))]
-        reply = "我找到了这些图片：" + "，".join([f"{it.get('id')} {it.get('name')}" for it in top if it.get("id")])
+            reply = "我找到了相关图片："
+    else:
+        if album_title:
+            reply = f"相册“{album_title}”中没有找到相关图片。"
+        else:
+            reply = "没有找到相关图片。"
 
     return jsonify({"message": "ok", "reply": reply, "keywords": keywords, "total": len(results), "images": results})
